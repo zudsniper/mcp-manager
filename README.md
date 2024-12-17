@@ -10,6 +10,8 @@ A web-based GUI tool for managing Model Context Protocol (MCP) servers in Claude
 - 🔒 Secure handling of environment variables and API keys
 - 📱 Responsive design that works on any screen size
 
+![MCP Server Manager Interface](https://github.com/MediaPublishing/mcp-manager/blob/main/MCP-Server-Manager.png?raw=true)
+
 ## Installation
 
 1. Clone this repository:
