@@ -1,0 +1,53 @@
+{
+  "mcpServers": {
+    "example-server": {
+      "command": "node",
+      "args": ["/path/to/server.js"],
+      "env": {
+        "API_KEY": "your-api-key-here"
+      }
+    },
+    "airtable": {
+      "command": "node",
+      "args": ["/path/to/airtable-mcp/build/index.js"],
+      "env": {
+        "AIRTABLE_API_KEY": "your-airtable-api-key"
+      }
+    },
+    "brave-search": {
+      "command": "node",
+      "args": ["/path/to/brave-search/dist/index.js"],
+      "env": {
+        "BRAVE_API_KEY": "your-brave-api-key"
+      }
+    },
+    "github": {
+      "command": "node",
+      "args": ["/path/to/github/dist/index.js"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "your-github-token"
+      }
+    },
+    "google-maps": {
+      "command": "node",
+      "args": ["/path/to/google-maps/dist/index.js"],
+      "env": {
+        "GOOGLE_MAPS_API_KEY": "your-google-maps-api-key"
+      }
+    },
+    "filesystem": {
+      "command": "node",
+      "args": [
+        "/path/to/filesystem/dist/index.js",
+        "/path/to/allowed/directory"
+      ]
+    },
+    "perplexity": {
+      "command": "node",
+      "args": ["/path/to/perplexity/dist/index.js"],
+      "env": {
+        "PERPLEXITY_API_KEY": "your-perplexity-api-key"
+      }
+    }
+  }
+}
