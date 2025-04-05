@@ -1,0 +1,16 @@
+{
+    "maxBackups": 10,
+    "clients": {
+      "claude": {
+        "name": "Claude Desktop",
+        "enabled": true,
+        "configPath": "/Users/jason/Library/Application Support/Claude/claude_desktop_config.json"
+      },
+      "cursor": {
+        "name": "Cursor",
+        "enabled": false,
+        "configPath": "/Users/jason/.cursor/mcp.json"
+      }
+    },
+    "syncClients": false
+  }

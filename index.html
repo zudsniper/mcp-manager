@@ -10,24 +10,200 @@
     <div class="container">
         <h1>MCP Server Manager</h1>
         
-        <!-- Messages -->
+        <!-- Messages will be converted to toasts -->
         <div id="errorMessage" class="message error" style="display: none;"></div>
         <div id="successMessage" class="message success" style="display: none;"></div>
-        
-        <!-- Navigation -->
-        <div class="tabs">
-            <button class="tab active" onclick="showView('servers', this)">Servers</button>
-            <button class="tab" onclick="showView('tools', this)">Tools</button>
+
+        <!-- Config Warning -->
+        <div id="configWarning" class="config-warning">
+            <div class="warning-icon">⚠️</div>
+            <div id="configWarningMessage"></div>
         </div>
 
-        <!-- Servers View -->
-        <div id="serversView" class="grid"></div>
+        <!-- Main Content Grid -->
+        <div class="content-grid">
+            <!-- Left Content Area -->
+            <div class="main-content">
+                <!-- Preset Controls -->
+                <div class="preset-controls">
+                    <label for="presetSelector">Preset:</label>
+                    <select id="presetSelector" onchange="loadPreset(this.value)"></select>
+                    <input type="text" id="newPresetName" placeholder="New Preset Name">
+                    <button onclick="saveCurrentAsPreset()">Save As New</button>
+                    <button id="saveToPresetButton" onclick="saveToCurrentPreset()" style="display: none;">Save Changes to Preset</button>
+                    <button id="cancelPresetChangesButton" onclick="cancelPresetChanges()" style="display: none;">Cancel Preset Changes</button>
+                    <button id="deletePresetButton" onclick="deleteCurrentPreset()">Delete Selected</button>
+                </div>
+                
+                <!-- Navigation -->
+                <div class="tabs">
+                    <button class="tab active" onclick="showView('servers', this)">Servers</button>
+                    <button class="tab" onclick="showView('tools', this)">Tools</button>
+                    <button class="tab" onclick="showView('backups', this)">Backups</button>
+                </div>
 
-        <!-- Tools View -->
-        <div id="toolsView" style="display: none;"></div>
+                <!-- Views -->
+                <div id="serversView" class="view active"></div>
+                <div id="toolsView" class="view" style="display: none;"></div>
+                <div id="backupsView" class="view" style="display: none;"></div>
 
-        <!-- Save Button -->
+                <!-- Save Button removed from here -->
+            </div>
+
+            <!-- Right Sidebar - Client Selection -->
+            <div class="client-sidebar">
+                <h3>MCP Clients</h3>
+                <div id="clientList" class="client-list">
+                    <!-- Client items will be rendered here by app.js -->
+                    <!-- Example of static items (if needed, but handled by JS now) -->
+                    <!--
+                    <div class="client-item" data-client-id="claude" data-built-in="true">
+                        <span class="client-name">Claude Desktop</span>
+                    </div>
+                    <div class="client-item" data-client-id="cursor" data-built-in="true">
+                        <span class="client-name">Cursor</span>
+                    </div>
+                    -->
+                </div>
+                <div class="sync-controls">
+                    <label>
+                        <input type="checkbox" id="syncClientsToggle">
+                        Sync Clients
+                    </label>
+                </div>
+                <!-- Add Client button might be removed if settings are managed elsewhere -->
+                <!-- <button class="add-client-button" onclick="showAddClientModal()">+ Add Custom Client</button> -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container for notifications -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Floating Buttons Container -->
+    <div class="floating-buttons" id="floatingButtons" style="display: none;">
         <button class="save-button" onclick="saveChanges()">Save Changes</button>
+        <button class="reset-button" onclick="resetChanges()">Reset Changes</button>
+    </div>
+
+    <!-- Save Warning Modal -->
+    <div id="saveWarningModal" class="modal">
+        <div class="modal-content">
+            <span class="close-button" onclick="closeModal('saveWarningModal')">&times;</span>
+            <h2>Save Warning</h2>
+            <p id="saveWarningMessage"></p>
+            <div class="modal-buttons">
+                <button onclick="forceSaveChanges()">Save Anyway</button>
+                <button onclick="closeModal('saveWarningModal')">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Client Modal -->
+    <div id="addClientModal" class="modal">
+        <div class="modal-content">
+            <span class="close-button" onclick="closeModal('addClientModal')">&times;</span>
+            <h2>Add Custom MCP Client</h2>
+            <div class="form-group">
+                <label for="clientName">Client Name:</label>
+                <input type="text" id="clientName" placeholder="Custom Client Name">
+            </div>
+            <div class="form-group">
+                <label for="clientConfigPath">Config File Path:</label>
+                <input type="text" id="clientConfigPath" placeholder="/path/to/config.json">
+            </div>
+            <div class="modal-buttons">
+                <button onclick="addCustomClient()">Add Client</button>
+                <button onclick="closeModal('addClientModal')">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Server Config Editor Modal -->
+    <div id="serverConfigModal" class="modal">
+        <div class="modal-content config-editor">
+            <span class="close-button" onclick="closeModal('serverConfigModal')">&times;</span>
+            <h2>Edit Server Configuration</h2>
+            <form id="serverConfigForm">
+                <div class="form-group">
+                    <label for="serverName">Server Name:</label>
+                    <input type="text" id="serverName" readonly>
+                </div>
+                
+                <div class="form-group">
+                    <label for="serverCommand">Command:</label>
+                    <input type="text" id="serverCommand" placeholder="node, python, etc.">
+                </div>
+                
+                <div class="form-group">
+                    <label>Arguments:</label>
+                    <div id="serverArgs" class="args-container">
+                        <!-- Dynamic args will be added here -->
+                    </div>
+                    <button type="button" class="add-arg-button" onclick="addServerArg()">+ Add Argument</button>
+                </div>
+                
+                <div class="form-group">
+                    <label>Environment Variables:</label>
+                    <div id="serverEnv" class="env-container">
+                        <!-- Dynamic env vars will be added here -->
+                    </div>
+                    <button type="button" class="add-env-button" onclick="addServerEnv()">+ Add Environment Variable</button>
+                </div>
+
+                <div class="form-group">
+                    <label for="serverType">Connection Type:</label>
+                    <select id="serverType">
+                        <option value="subprocess">Subprocess (Command-based)</option>
+                        <option value="sse">Server-Sent Events (URL-based)</option>
+                    </select>
+                </div>
+                
+                <div id="sseUrlContainer" class="form-group" style="display: none;">
+                    <label for="sseUrl">SSE URL:</label>
+                    <input type="text" id="sseUrl" placeholder="https://your-sse-server.com/events">
+                </div>
+
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="enableInspector">
+                        Enable MCP Inspector
+                    </label>
+                    <div class="help-text">
+                        MCP Inspector adds a layer to intercept and debug MCP messages
+                    </div>
+                </div>
+                
+                <div id="inspectorOptionsContainer" class="form-group subgroup" style="display: none;">
+                    <label for="inspectorPort">Inspector Port:</label>
+                    <input type="number" id="inspectorPort" value="7860" min="1024" max="65535">
+                    <div class="help-text">
+                        Port to run the MCP Inspector dashboard (default: 7860)
+                    </div>
+                </div>
+                
+                <div class="modal-buttons">
+                    <button type="button" onclick="saveServerConfig()">Save Configuration</button>
+                    <button type="button" onclick="closeModal('serverConfigModal')">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Config Path Detection Modal -->
+    <div id="configDetectionModal" class="modal">
+        <div class="modal-content">
+            <span class="close-button" onclick="closeModal('configDetectionModal')">&times;</span>
+            <h2>Configuration Files Not Found</h2>
+            <p>We couldn't locate the configuration files for the following clients. Please provide the correct paths:</p>
+            
+            <div id="missingConfigClients"></div>
+            
+            <div class="modal-buttons">
+                <button onclick="saveConfigPaths()">Save Config Paths</button>
+                <button onclick="detectConfigPathsAgain()">Try Auto-Detection Again</button>
+            </div>
+        </div>
     </div>
 
     <script src="app.js"></script>

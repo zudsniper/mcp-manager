@@ -11,6 +11,9 @@ yarn-error.log
 
 # Config files with sensitive data
 config.json
+configs/
+settings.json
+presets.json
 
 # Editor directories and files
 .idea/
@@ -34,3 +37,8 @@ Thumbs.db
 dist/
 build/
 *.log
+
+# cursor-tools
+.repomix*
+!.repomixignore
+cursor-tools.config.json
