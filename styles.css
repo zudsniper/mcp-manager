@@ -402,34 +402,25 @@ input:checked + .slider:before {
     display: flex;
     justify-content: flex-end;
     gap: 10px;
+    margin-top: 20px;
 }
 
 .modal-buttons button {
-    padding: 10px 20px;
+    padding: 8px 15px;
     border: none;
     border-radius: 4px;
+    font-weight: 500;
     cursor: pointer;
-    font-weight: bold;
 }
 
-.modal-buttons button:first-child { /* Save Anyway / Confirm */
-    background-color: var(--accent-color);
+.modal-buttons .save-button {
+    background-color: var(--primary-color);
     color: white;
 }
 
-.modal-buttons button:last-child { /* Cancel */
-    background-color: var(--button-secondary-bg);
-    color: var(--text-primary);
-}
-
-.modal-buttons button:first-child:hover {
-    opacity: 0.9;
-}
-
-.modal-buttons button:last-child:hover {
-    background-color: darken(var(--button-secondary-bg), 10%); /* Needs a preprocessor or manual darker color */
-    /* Alternatively: */
-    filter: brightness(90%);
+.modal-buttons .reset-button {
+    background-color: var(--error-color);
+    color: white;
 }
 
 /* Preset Controls Styles */
@@ -1144,4 +1135,97 @@ body.shift-pressed .env-var-pair[data-sensitive="true"] .env-value,
 .client-item.active {
     background-color: #f0f4c3;
     border-left: 4px solid #827717;
+}
+
+/* Shake animation for modals */
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    10%, 30%, 50%, 70%, 90% { transform: translateX(-5px); }
+    20%, 40%, 60%, 80% { transform: translateX(5px); }
+}
+
+.shake-animation {
+    animation: shake 0.5s ease;
+}
+
+/* Tooltip styles */
+.tooltip {
+    position: relative;
+    display: inline-block;
+}
+
+.tooltip .tooltip-text {
+    visibility: hidden;
+    width: 280px;
+    background-color: #333;
+    color: #fff;
+    text-align: center;
+    border-radius: 6px;
+    padding: 8px;
+    position: absolute;
+    z-index: 1;
+    bottom: 125%;
+    left: 50%;
+    transform: translateX(-50%);
+    opacity: 0;
+    transition: opacity 0.3s;
+}
+
+.tooltip .tooltip-text::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    margin-left: -5px;
+    border-width: 5px;
+    border-style: solid;
+    border-color: #333 transparent transparent transparent;
+}
+
+.tooltip:hover .tooltip-text {
+    visibility: visible;
+    opacity: 1;
+}
+
+/* Fix for remove buttons in env/arg rows */
+.arg-item,
+.env-item {
+    display: flex;
+    align-items: center;
+    margin-bottom: 8px;
+    gap: 8px;
+}
+
+.arg-item input,
+.env-item input {
+    flex-grow: 1;
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 0.9rem;
+}
+
+.env-item input:first-child {
+    width: 40%;
+    flex-grow: 0;
+    font-weight: 500;
+}
+
+.arg-item .remove-button,
+.env-item .remove-button {
+    background-color: var(--error-color);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    min-width: 24px; /* Prevent squishing */
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    flex-shrink: 0; /* Prevent squishing */
 }

@@ -22,6 +22,8 @@ let hasUnsavedChanges = false; // Track unsaved changes in the current editor se
 let lastLoadedClientId = null; // Remember the last client loaded when sync is off
 let isServersMode = true; // Default to server configuration mode
 let jsonEditor = null; // Monaco editor instance
+let currentEditorTab = 'form'; // Current tab in the server config modal
+let hasModalChanges = false; // Track unsaved changes in the server config modal
 
 // API endpoints
 const API = {
@@ -259,7 +261,7 @@ function renderEnvironmentVars(env) {
         const isSensitive = isSensitiveEnvVar(key);
         const displayValue = isSensitive ? maskValue(value) : value;
         html += `
-            <div class="env-var-pair" data-sensitive="${isSensitive}" onclick="copyEnvVarToClipboard('${key}', '${value}')">
+            <div class="env-var-pair" data-sensitive="${isSensitive}" onclick="if(event.shiftKey) { copyEnvVarToClipboard('${key}', '${value}'); }">
                 <span class="env-key">${key}</span>
                 <span class="env-value">${displayValue}</span>
                 <span class="copy-feedback">Copied!</span>
@@ -418,16 +420,35 @@ function openModal(modalId) {
 // Function to close a modal
 function closeModal(modalId) {
     const modal = document.getElementById(modalId);
-    if (modal) {
-        modal.style.display = 'none';
+    if (!modal) return;
+    
+    // If trying to close the server config modal with unsaved changes
+    if (modalId === 'serverConfigModal' && hasModalChanges) {
+        // Create shake animation
+        modal.querySelector('.modal-content').classList.add('shake-animation');
         
-        // Clean up event listener
-        modal.removeEventListener('click', function(event) {
-            if (event.target === modal) {
-                closeModal(modalId);
-            }
-        });
+        // Show warning
+        showWarning('Please save or reset your changes before closing');
+        
+        // Remove shake class after animation completes
+        setTimeout(() => {
+            const content = modal.querySelector('.modal-content');
+            if (content) content.classList.remove('shake-animation');
+        }, 500);
+        
+        return; // Don't close the modal
     }
+    
+    // For all other modals or when no unsaved changes
+    modal.style.display = 'none';
+    
+    // Reset modal state if it's the server config modal
+    if (modalId === 'serverConfigModal') {
+        hasModalChanges = false;
+    }
+    
+    // Clean up event listeners (note: this doesn't actually work as written due to anonymous function)
+    // A better approach would be to use named functions or store references
 }
 
 async function saveChanges() {
@@ -1074,74 +1095,114 @@ let currentServerName = null;
 
 // Opens the server configuration editor modal
 function openServerConfig(serverName) {
-    console.log(`Opening config for server: ${serverName}`);
-    currentServerName = serverName;
+    const isNew = serverName === 'new';
+    const modal = document.getElementById('serverConfigModal');
     
-    // Get the server config
-    const config = mcpServers[serverName] || {};
+    // Reset unsaved changes status
+    hasModalChanges = false;
     
-    // Reset form
-    document.getElementById('serverConfigForm').reset();
+    // Set or clear the server name
+    document.getElementById('serverName').value = isNew ? '' : serverName;
+    document.getElementById('serverName').readOnly = !isNew;
     
-    // Clear dynamic containers
-    document.getElementById('serverArgs').innerHTML = '';
-    document.getElementById('serverEnv').innerHTML = '';
+    // Initialize Monaco if not already done
+    initMonacoEditor();
     
-    // Fill in the form fields
-    document.getElementById('serverName').value = serverName;
-    document.getElementById('serverCommand').value = config.command || '';
-    
-    // Connection type
-    const serverType = config.sse ? 'sse' : 'subprocess';
-    document.getElementById('serverType').value = serverType;
-    document.getElementById('sseUrlContainer').style.display = serverType === 'sse' ? 'block' : 'none';
-    document.getElementById('sseUrl').value = config.sse || '';
-    
-    // Add arguments
-    if (Array.isArray(config.args)) {
-        config.args.forEach(arg => addServerArg(arg));
-    }
-    
-    // Add environment variables
-    if (config.env) {
-        Object.entries(config.env).forEach(([key, value]) => addServerEnv(key, value));
-    }
-    
-    // MCP Inspector settings
-    const hasInspector = config.inspector || false;
-    document.getElementById('enableInspector').checked = hasInspector;
-    document.getElementById('inspectorOptionsContainer').style.display = hasInspector ? 'block' : 'none';
-    
-    if (hasInspector && config.inspectorPort) {
-        document.getElementById('inspectorPort').value = config.inspectorPort;
+    if (isNew) {
+        // Clear form for new server
+        document.getElementById('serverCommand').value = '';
+        document.getElementById('serverArgs').innerHTML = '';
+        document.getElementById('serverEnv').innerHTML = '';
+        document.getElementById('serverType').value = 'subprocess';
+        document.getElementById('sseUrlContainer').style.display = 'none';
+        document.getElementById('enableInspector').checked = false;
+        document.getElementById('inspectorOptionsContainer').style.display = 'none';
+        
+        // Set default JSON for new server
+        jsonEditor.setValue(JSON.stringify({
+            command: "",
+            args: [],
+            env: {}
+        }, null, 2));
     } else {
-        document.getElementById('inspectorPort').value = '7860';
+        // Fill form with existing server config
+        const server = mcpServers[serverName];
+        document.getElementById('serverCommand').value = server.command || '';
+        
+        // Clear and populate args
+        document.getElementById('serverArgs').innerHTML = '';
+        if (server.args && Array.isArray(server.args)) {
+            server.args.forEach(arg => {
+                addServerArg(arg);
+            });
+        }
+        
+        // Clear and populate env vars
+        document.getElementById('serverEnv').innerHTML = '';
+        if (server.env) {
+            Object.entries(server.env).forEach(([key, value]) => {
+                addServerEnv(key, value);
+            });
+        }
+        
+        // Set connection type
+        const serverType = server.sseUrl ? 'sse' : 'subprocess';
+        document.getElementById('serverType').value = serverType;
+        document.getElementById('sseUrlContainer').style.display = serverType === 'sse' ? 'block' : 'none';
+        if (server.sseUrl) {
+            document.getElementById('sseUrl').value = server.sseUrl;
+        }
+        
+        // Set inspector settings
+        document.getElementById('enableInspector').checked = !!server.enableInspector;
+        document.getElementById('inspectorOptionsContainer').style.display = server.enableInspector ? 'block' : 'none';
+        if (server.inspectorPort) {
+            document.getElementById('inspectorPort').value = server.inspectorPort;
+        }
+        
+        // Set JSON editor with formatted config
+        jsonEditor.setValue(JSON.stringify(server, null, 2));
     }
     
-    // Add event listener for inspector checkbox
-    document.getElementById('enableInspector').onchange = function() {
-        document.getElementById('inspectorOptionsContainer').style.display = 
-            this.checked ? 'block' : 'none';
-    };
+    // Add change listeners to form elements
+    document.getElementById('serverCommand').addEventListener('change', modalContentChanged);
+    document.getElementById('serverType').addEventListener('change', modalContentChanged);
+    document.getElementById('sseUrl').addEventListener('change', modalContentChanged);
     
-    // Add event listener for server type
-    document.getElementById('serverType').onchange = function() {
-        document.getElementById('sseUrlContainer').style.display = 
-            this.value === 'sse' ? 'block' : 'none';
-    };
+    // Grey out and disable the inspector option (as requested)
+    const inspectorCheckbox = document.getElementById('enableInspector');
+    inspectorCheckbox.disabled = true;
+    inspectorCheckbox.parentElement.style.opacity = '0.5';
+    inspectorCheckbox.parentElement.title = 'Coming soon! MCP Inspector functionality will be added in a future update.';
+    document.getElementById('inspectorOptionsContainer').style.display = 'none';
     
-    // Open the modal
-    openModal('serverConfigModal');
+    // Add change listener to the JSON editor
+    if (jsonEditor) {
+        jsonEditor.onDidChangeModelContent(() => {
+            if (currentEditorTab === 'json') {
+                modalContentChanged();
+            }
+        });
+    }
+    
+    // Start with form tab by default
+    switchEditorTab('form');
+    
+    // Reset the modal buttons state
+    updateModalButtons();
+    
+    // Show the modal
+    modal.style.display = 'block';
 }
 
 // Add a new argument input row
 function addServerArg(value = '') {
     const container = document.getElementById('serverArgs');
     const row = document.createElement('div');
-    row.className = 'arg-row';
+    row.className = 'arg-item';
     
     row.innerHTML = `
-        <input type="text" value="${value}" placeholder="Argument value">
+        <input type="text" value="${value}" placeholder="Argument value" onchange="modalContentChanged()">
         <button type="button" class="remove-button" onclick="removeElement(this.parentNode)">&times;</button>
     `;
     
@@ -1152,95 +1213,152 @@ function addServerArg(value = '') {
 function addServerEnv(key = '', value = '') {
     const container = document.getElementById('serverEnv');
     const row = document.createElement('div');
-    row.className = 'env-row';
+    row.className = 'env-item';
     
     row.innerHTML = `
-        <input type="text" value="${key}" placeholder="KEY">
-        <input type="text" value="${value}" placeholder="Value">
+        <input type="text" class="env-key-input" value="${key}" placeholder="KEY" onchange="modalContentChanged()">
+        <input type="text" class="env-value-input" value="${value}" placeholder="Value" onchange="modalContentChanged()">
         <button type="button" class="remove-button" onclick="removeElement(this.parentNode)">&times;</button>
     `;
     
     container.appendChild(row);
 }
 
-// Remove an element from the DOM
+// Remove an element from the DOM and track changes
 function removeElement(element) {
     if (element && element.parentNode) {
         element.parentNode.removeChild(element);
+        modalContentChanged();
     }
 }
 
-// Save the server configuration
+// Function to track changes in the modal
+function modalContentChanged() {
+    hasModalChanges = true;
+    updateModalButtons();
+}
+
+// Function to update the modal buttons based on whether there are changes
+function updateModalButtons() {
+    const saveButton = document.querySelector('#serverConfigModal .modal-buttons .save-button');
+    const resetButton = document.querySelector('#serverConfigModal .modal-buttons .reset-button');
+    
+    if (saveButton && resetButton) {
+        saveButton.style.display = hasModalChanges ? 'inline-block' : 'inline-block'; // Always show save
+        resetButton.style.display = hasModalChanges ? 'inline-block' : 'none'; // Only show reset when changes exist
+    }
+}
+
+// Override the original saveServerConfig to handle both form and JSON editors
 function saveServerConfig() {
-    const serverName = document.getElementById('configServerName').value.trim();
-    const originalName = document.getElementById('configServerName').getAttribute('data-original-name');
-    
-    // Basic validation
-    if (!serverName) {
-        alert('Server name cannot be empty');
-        return;
-    }
-    
-    // Get command and args
-    const command = document.getElementById('configServerCommand').value.trim();
-    const argsContainer = document.getElementById('configServerArgs');
-    const args = Array.from(argsContainer.querySelectorAll('input')).map(input => input.value.trim());
-    
-    // Get environment variables
-    const envContainer = document.getElementById('configServerEnv');
-    const envInputs = envContainer.querySelectorAll('.env-pair');
-    const env = {};
-    
-    Array.from(envInputs).forEach(pair => {
-        const keyInput = pair.querySelector('input[placeholder="Key"]');
-        const valueInput = pair.querySelector('input[placeholder="Value"]');
-        if (keyInput && valueInput && keyInput.value.trim()) {
-            env[keyInput.value.trim()] = valueInput.value.trim();
+    try {
+        let config;
+        
+        // Get server name from the form (same for both tabs)
+        const serverNameInput = document.getElementById('serverName');
+        let serverName = serverNameInput.value.trim();
+        
+        if (currentEditorTab === 'json') {
+            // Get config from JSON editor
+            try {
+                config = JSON.parse(jsonEditor.getValue());
+            } catch (e) {
+                showWarning('Invalid JSON: ' + e.message);
+                return;
+            }
+        } else {
+            // Get config from form (original implementation)
+            const serverCommand = document.getElementById('serverCommand').value.trim();
+            if (!serverCommand) {
+                showWarning('Command is required');
+                return;
+            }
+            
+            config = {
+                command: serverCommand,
+                args: [],
+                env: {}
+            };
+            
+            // Gather args
+            document.querySelectorAll('#serverArgs .arg-item').forEach(item => {
+                const input = item.querySelector('input');
+                if (input && input.value.trim()) {
+                    config.args.push(input.value.trim());
+                }
+            });
+            
+            // Gather env vars
+            document.querySelectorAll('#serverEnv .env-item').forEach(item => {
+                const keyInput = item.querySelector('.env-key-input');
+                const valueInput = item.querySelector('.env-value-input');
+                if (keyInput && valueInput && keyInput.value.trim()) {
+                    config.env[keyInput.value.trim()] = valueInput.value;
+                }
+            });
+            
+            // Check if it's an SSE connection
+            const serverType = document.getElementById('serverType').value;
+            if (serverType === 'sse') {
+                const sseUrl = document.getElementById('sseUrl').value.trim();
+                if (!sseUrl) {
+                    showWarning('SSE URL is required for SSE connections');
+                    return;
+                }
+                config.sseUrl = sseUrl;
+            }
+            
+            // Add inspector settings if enabled
+            if (document.getElementById('enableInspector').checked) {
+                config.enableInspector = true;
+                config.inspectorPort = parseInt(document.getElementById('inspectorPort').value);
+            }
         }
-    });
-    
-    // Get disabled state
-    const disabled = !document.getElementById('serverEnabledToggle').checked;
-    
-    // Get inspector settings
-    const inspectorEnabled = document.getElementById('inspectorEnabledToggle').checked;
-    const inspectorHost = document.getElementById('inspectorHost').value.trim();
-    const inspectorPort = parseInt(document.getElementById('inspectorPort').value, 10) || 9229;
-    
-    // Create the server config object
-    const serverConfig = {
-        command,
-        args,
-        env,
-        disabled
-    };
-    
-    // Add inspector settings if enabled
-    if (inspectorEnabled) {
-        serverConfig.inspector = {
-            enabled: true,
-            host: inspectorHost || 'localhost',
-            port: inspectorPort
-        };
+        
+        // Handle creating a new server
+        if (!serverName || serverName === 'new') {
+            // For new servers, prompt for a name
+            serverName = prompt('Enter a name for this MCP server:');
+            if (!serverName) return; // User cancelled
+            
+            if (mcpServers[serverName]) {
+                // Name already exists
+                if (!confirm(`Server "${serverName}" already exists. Overwrite it?`)) {
+                    return;
+                }
+            }
+        }
+        
+        // Store the config and close the modal
+        mcpServers[serverName] = config;
+        renderServers();
+        configChanged();
+        
+        // Reset changes flag before closing
+        hasModalChanges = false;
+        closeModal('serverConfigModal');
+        showToast(`Server "${serverName}" configuration saved`);
+    } catch (error) {
+        console.error('Error saving server config:', error);
+        showWarning('Error saving server configuration: ' + error.message);
     }
-    
-    console.log('Updated server config:', serverConfig);
-    
-    // Handle rename scenario
-    if (originalName && serverName !== originalName) {
-        console.log(`Renaming server from ${originalName} to ${serverName}`);
-        delete mcpServers[originalName];
+}
+
+// Function to reset server configuration changes
+function resetServerConfig() {
+    if (confirm("Are you sure you want to discard your changes?")) {
+        hasModalChanges = false;
+        const serverName = document.getElementById('serverName').value.trim();
+        
+        // Reopen the server config to reset all fields
+        if (serverName && serverName !== 'new') {
+            openServerConfig(serverName);
+        } else {
+            openServerConfig('new');
+        }
+        
+        showToast('Changes discarded');
     }
-    
-    // Update the server configuration
-    mcpServers[serverName] = serverConfig;
-    
-    // Trigger config changed to update UI state
-    configChanged();
-    
-    // Rerender and close modal
-    renderServers();
-    closeModal('configModal');
 }
 
 // Track changes to the configuration
@@ -2220,173 +2338,6 @@ async function resolveExecutablePaths() {
     } catch (e) {
         console.error('Error resolving paths:', e);
         pathInfo.innerHTML = `<div class="path-warning">Error: ${e.message}</div>`;
-    }
-}
-
-// Override the original openServerConfig to include Monaco editor support
-function openServerConfig(serverName) {
-    const isNew = serverName === 'new';
-    const modal = document.getElementById('serverConfigModal');
-    
-    // Set or clear the server name
-    document.getElementById('serverName').value = isNew ? '' : serverName;
-    document.getElementById('serverName').readOnly = !isNew;
-    
-    // Initialize Monaco if not already done
-    initMonacoEditor();
-    
-    if (isNew) {
-        // Clear form for new server
-        document.getElementById('serverCommand').value = '';
-        document.getElementById('serverArgs').innerHTML = '';
-        document.getElementById('serverEnv').innerHTML = '';
-        document.getElementById('serverType').value = 'subprocess';
-        document.getElementById('sseUrlContainer').style.display = 'none';
-        document.getElementById('enableInspector').checked = false;
-        document.getElementById('inspectorOptionsContainer').style.display = 'none';
-        
-        // Set default JSON for new server
-        jsonEditor.setValue(JSON.stringify({
-            command: "",
-            args: [],
-            env: {}
-        }, null, 2));
-    } else {
-        // Fill form with existing server config
-        const server = mcpServers[serverName];
-        document.getElementById('serverCommand').value = server.command || '';
-        
-        // Clear and populate args
-        document.getElementById('serverArgs').innerHTML = '';
-        if (server.args && Array.isArray(server.args)) {
-            server.args.forEach(arg => {
-                addServerArg(arg);
-            });
-        }
-        
-        // Clear and populate env vars
-        document.getElementById('serverEnv').innerHTML = '';
-        if (server.env) {
-            Object.entries(server.env).forEach(([key, value]) => {
-                addServerEnv(key, value);
-            });
-        }
-        
-        // Set connection type
-        const serverType = server.sseUrl ? 'sse' : 'subprocess';
-        document.getElementById('serverType').value = serverType;
-        document.getElementById('sseUrlContainer').style.display = serverType === 'sse' ? 'block' : 'none';
-        if (server.sseUrl) {
-            document.getElementById('sseUrl').value = server.sseUrl;
-        }
-        
-        // Set inspector settings
-        document.getElementById('enableInspector').checked = !!server.enableInspector;
-        document.getElementById('inspectorOptionsContainer').style.display = server.enableInspector ? 'block' : 'none';
-        if (server.inspectorPort) {
-            document.getElementById('inspectorPort').value = server.inspectorPort;
-        }
-        
-        // Set JSON editor with formatted config
-        jsonEditor.setValue(JSON.stringify(server, null, 2));
-    }
-    
-    // Start with form tab by default
-    switchEditorTab('form');
-    
-    // Show the modal
-    modal.style.display = 'block';
-}
-
-// Override the original saveServerConfig to handle both form and JSON editors
-function saveServerConfig() {
-    try {
-        let config;
-        
-        // Get server name from the form (same for both tabs)
-        const serverNameInput = document.getElementById('serverName');
-        let serverName = serverNameInput.value.trim();
-        
-        if (currentEditorTab === 'json') {
-            // Get config from JSON editor
-            try {
-                config = JSON.parse(jsonEditor.getValue());
-            } catch (e) {
-                showWarning('Invalid JSON: ' + e.message);
-                return;
-            }
-        } else {
-            // Get config from form (original implementation)
-            const serverCommand = document.getElementById('serverCommand').value.trim();
-            if (!serverCommand) {
-                showWarning('Command is required');
-                return;
-            }
-            
-            config = {
-                command: serverCommand,
-                args: [],
-                env: {}
-            };
-            
-            // Gather args
-            document.querySelectorAll('#serverArgs .arg-item').forEach(item => {
-                const input = item.querySelector('input');
-                if (input && input.value.trim()) {
-                    config.args.push(input.value.trim());
-                }
-            });
-            
-            // Gather env vars
-            document.querySelectorAll('#serverEnv .env-item').forEach(item => {
-                const keyInput = item.querySelector('.env-key-input');
-                const valueInput = item.querySelector('.env-value-input');
-                if (keyInput && valueInput && keyInput.value.trim()) {
-                    config.env[keyInput.value.trim()] = valueInput.value;
-                }
-            });
-            
-            // Check if it's an SSE connection
-            const serverType = document.getElementById('serverType').value;
-            if (serverType === 'sse') {
-                const sseUrl = document.getElementById('sseUrl').value.trim();
-                if (!sseUrl) {
-                    showWarning('SSE URL is required for SSE connections');
-                    return;
-                }
-                config.sseUrl = sseUrl;
-            }
-            
-            // Add inspector settings if enabled
-            if (document.getElementById('enableInspector').checked) {
-                config.enableInspector = true;
-                config.inspectorPort = parseInt(document.getElementById('inspectorPort').value);
-            }
-        }
-        
-        // Handle creating a new server
-        if (!serverName || serverName === 'new') {
-            // For new servers, prompt for a name
-            serverName = prompt('Enter a name for this MCP server:');
-            if (!serverName) return; // User cancelled
-            
-            if (mcpServers[serverName]) {
-                // Name already exists
-                if (!confirm(`Server "${serverName}" already exists. Overwrite it?`)) {
-                    return;
-                }
-            }
-        }
-        
-        // Store the config and close the modal
-        mcpServers[serverName] = config;
-        renderServers();
-        configChanged();
-        closeModal('serverConfigModal');
-        showToast(`Server "${serverName}" configuration saved`);
-    } catch (error) {
-        console.error('Error saving server config:', error);
-        showWarning('Error saving server configuration: ' + error.message);
     }
 }
 

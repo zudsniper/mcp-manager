@@ -221,13 +221,17 @@
                 <div id="monacoContainer" style="height: 400px; width: 100%; border: 1px solid #ccc;"></div>
                 <div class="path-resolution">
                     <div class="path-info" id="pathInfo"></div>
-                    <button type="button" onclick="resolveExecutablePaths()" class="resolve-paths-btn">Resolve Executable Paths</button>
+                    <div class="tooltip">
+                        <button type="button" onclick="resolveExecutablePaths()" class="resolve-paths-btn">Resolve Executable Paths</button>
+                        <span class="tooltip-text">Finds absolute paths to npm, npx, node, or python executables to help avoid version conflicts. Use this if you're experiencing issues with Node.js version compatibility or if MCP servers aren't starting correctly.</span>
+                    </div>
                 </div>
             </div>
             
             <div class="modal-buttons">
-                <button type="button" onclick="saveServerConfig()">Save Configuration</button>
-                <button type="button" onclick="closeModal('serverConfigModal')">Cancel</button>
+                <button type="button" onclick="closeModal('serverConfigModal')" class="cancel-button">Cancel</button>
+                <button type="button" onclick="resetServerConfig()" class="reset-button" style="display: none;">Reset Changes</button>
+                <button type="button" onclick="saveServerConfig()" class="save-button">Save Configuration</button>
             </div>
         </div>
     </div>
