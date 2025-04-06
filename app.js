@@ -25,6 +25,8 @@ let jsonEditor = null; // Monaco editor instance
 let currentEditorTab = 'form'; // Current tab in the server config modal
 let hasModalChanges = false; // Track unsaved changes in the server config modal
 let isShiftPressed = false; // Track if shift key is pressed
+let modalOriginalConfig = {}; // Track the config state when the modal was opened
+let syncCandidate = null; // Track the first client selected for potential sync
 
 // API endpoints
 const API = {
@@ -38,7 +40,10 @@ const API = {
     PRESETS: '/api/presets',
     PRESET_GET: '/api/presets/',
     PRESET_SAVE: '/api/presets/',
-    PRESET_DELETE: '/api/presets/'
+    PRESET_DELETE: '/api/presets/',
+    SAVE_CLIENT: '/api/clients', // POST for add/update
+    DELETE_CLIENT: '/api/clients/', // DELETE /api/clients/:clientId
+    SYNC_GROUP: '/api/sync-groups' // POST to create/update group
 };
 
 function showMessage(message, isError = true, type = null) {
@@ -271,76 +276,158 @@ function renderEnvironmentVars(env) {
     }).join('');
 }
 
-// Function to render the servers view with proper button visibility logic
+// Function to render the list of servers
 function renderServers() {
     const serversView = document.getElementById('serversView');
-    if (!serversView) return;
     
-    // Only show add server elements in servers view when in serversMode
-    const showAddButtons = isServersMode;
+    // Clear existing content first
+    serversView.innerHTML = '';
     
-    // Create HTML for server grid
-    let serversHTML = '<div class="grid">';
+    // Container for server cards
+    const grid = document.createElement('div');
+    grid.className = 'content-grid';
+
+    // Get server names and sort them alphabetically
+    const serverNames = Object.keys(mcpServers);
+    const sortedServerNames = serverNames.filter(name => !name.startsWith('_')).sort();
     
-    // Sort servers alphabetically
-    const serverNames = Object.keys(mcpServers).sort();
-    
-    serverNames.forEach(name => {
-        const server = mcpServers[name];
-        const isEnabled = server.enabled !== false; // Default to true if not specified
+    if (sortedServerNames.length === 0) {
+        const emptyState = document.createElement('div');
+        emptyState.className = 'empty-state';
+        emptyState.innerHTML = `
+            <p>No server configurations found</p>
+            <button class="add-server-button" onclick="openServerConfig('new')">+ Add Server</button>
+        `;
+        serversView.appendChild(emptyState);
+        return;
+    }
+
+    sortedServerNames.forEach(serverName => {
+        const serverData = mcpServers[serverName];
+        const card = document.createElement('div');
+        card.className = 'server-card';
+        card.dataset.serverKey = serverName;
+
+        // Determine source text for conflicting servers
+        let sourceText = '';
+        if (isServersMode && serverData._conflicts && serverData._sources) {
+            sourceText = `<div class="server-source">(${serverData._sources.join(', ')})</div>`;
+        } else if (isServersMode && serverData._sources && serverData._sources.length === 1) {
+            // Optionally show single source if needed, or leave blank
+             // sourceText = `<div class="server-source">(${serverData._sources[0]})</div>`;
+        }
         
-        // Create server card
-        serversHTML += `
-            <div class="server-card" data-server-name="${name}">
-                <div class="server-header">
-                    <div class="server-name">${name}</div>
-                    <label class="toggle-switch">
-                        <input type="checkbox" onchange="toggleServer('${name}', this.checked)" ${isEnabled ? 'checked' : ''}>
-                        <span class="slider"></span>
-                    </label>
+        // Build full command string with args
+        let fullCommand = serverData.command || 'Not set';
+        if (serverData.args && serverData.args.length > 0) {
+            fullCommand += ' ' + serverData.args.join(' ');
+        }
+        
+        // Truncate command if too long
+        const maxCommandLength = 50; // Maximum characters before truncation
+        let displayCommand = fullCommand;
+        if (fullCommand.length > maxCommandLength) {
+            displayCommand = fullCommand.substring(0, maxCommandLength) + '...';
+        }
+
+        card.innerHTML = `
+            <div class="server-header">
+                <div>
+                    <span class="server-name">${serverName}</span>
+                    ${sourceText}
                 </div>
-                <div class="server-path">${server.command} ${(server.args || []).join(' ')}</div>
-                ${renderEnvironmentVars(server.env || {})}
+                <div class="server-actions">
+                    <button class="icon-button edit-button" title="Edit Server" onclick="openServerConfig('${serverName}')">
+                        <i class="fas fa-edit"></i>
+                    </button>
+                    <button class="icon-button delete-button" title="Delete Server" onclick="confirmDeleteServer('${serverName}')">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="server-path" title="${fullCommand}">Command: ${displayCommand}</div>
+            <div class="env-vars">
+                <h4>Environment Variables</h4>
+                ${renderEnvironmentVars(serverData.env)}
             </div>
         `;
+        grid.appendChild(card);
+    });
+
+    serversView.appendChild(grid);
+    
+    // Add the "Add Server" button at the bottom if in Servers Mode
+    if (isServersMode) {
+        const addButton = document.createElement('button');
+        addButton.className = 'add-server-button';
+        addButton.textContent = '+ Add Server';
+        addButton.onclick = () => openServerConfig('new');
+        serversView.appendChild(addButton);
+    }
+
+    // Re-apply event listeners for hover/copy after re-rendering
+    setupEnvVarInteraction();
+}
+
+// Function to confirm server deletion
+function confirmDeleteServer(serverName) {
+    // Create or reuse a confirmation modal
+    let modal = document.getElementById('deleteServerModal');
+    if (!modal) {
+        // Create modal if it doesn't exist
+        modal = document.createElement('div');
+        modal.id = 'deleteServerModal';
+        modal.className = 'modal';
+        modal.innerHTML = `
+            <div class="modal-content">
+                <span class="close-button" onclick="closeModal('deleteServerModal')">&times;</span>
+                <h2>Confirm Delete</h2>
+                <p>Are you sure you want to delete the server "<span id="deleteServerName"></span>"?</p>
+                <p class="warning-text">This cannot be undone!</p>
+                <div class="modal-buttons">
+                    <button onclick="closeModal('deleteServerModal')">Cancel</button>
+                    <button id="confirmDeleteBtn" class="delete-button">Delete</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Set the server name in the modal
+    document.getElementById('deleteServerName').textContent = serverName;
+    
+    // Setup the delete confirmation button
+    const deleteBtn = document.getElementById('confirmDeleteBtn');
+    // Remove previous event listeners to prevent multiple bindings
+    const newDeleteBtn = deleteBtn.cloneNode(true);
+    deleteBtn.parentNode.replaceChild(newDeleteBtn, deleteBtn);
+    newDeleteBtn.addEventListener('click', () => {
+        deleteServer(serverName);
+        closeModal('deleteServerModal');
     });
     
-    // Add a message if no servers
-    if (serverNames.length === 0) {
-        serversHTML += '<div class="no-servers">No MCP servers configured. Click "Add Server" to add a server.</div>';
+    // Show the modal
+    modal.style.display = 'block';
+}
+
+// Function to delete a server
+function deleteServer(serverName) {
+    if (!serverName || !mcpServers[serverName]) {
+        showWarning('Server not found');
+        return;
     }
     
-    serversHTML += '</div>';
+    // Delete the server from the configuration
+    delete mcpServers[serverName];
     
-    // Add an "Add Server" button at the bottom, only if in serversMode
-    if (showAddButtons) {
-        serversHTML += '<button class="add-server-button" onclick="openServerConfig(\'new\')">+ Add Server</button>';
-    }
+    // Update UI
+    renderServers();
     
-    // Update the view
-    serversView.innerHTML = serversHTML;
-    
-    // Update top add button visibility
-    const topAddButton = document.getElementById('topAddServerButton');
-    if (topAddButton) {
-        topAddButton.style.display = showAddButtons ? 'flex' : 'none';
-    }
-    
-    // Add click handler to each server card
-    document.querySelectorAll('.server-card').forEach(card => {
-        card.addEventListener('click', function(e) {
-            // Don't trigger if clicking on a toggle switch or button
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON' || e.target.closest('.toggle-switch')) {
-                return;
-            }
-            // Open server config
-            const serverName = this.dataset.serverName;
-            openServerConfig(serverName);
-        });
-    });
-    
-    // Call configChanged to update floating buttons visibility
+    // Mark as changed
     configChanged();
+    
+    // Show success notification
+    showToast(`Server "${serverName}" deleted. Click Save Changes to persist.`, 'success');
 }
 
 // Function to show/hide the view
@@ -1092,108 +1179,244 @@ async function toggleClientSync() {
 let currentServerName = null;
 
 // Opens the server configuration editor modal
-function openServerConfig(serverName) {
-    const isNew = serverName === 'new';
+function openServerConfig(serverKey) {
     const modal = document.getElementById('serverConfigModal');
+    const form = document.getElementById('serverConfigForm');
+    const serverNameInput = document.getElementById('serverName');
+    initMonacoEditor(); // Ensure editor is ready
     
-    // Reset unsaved changes status
-    hasModalChanges = false;
-    
-    // Set or clear the server name
-    document.getElementById('serverName').value = isNew ? '' : serverName;
-    document.getElementById('serverName').readOnly = !isNew;
-    
-    // Initialize Monaco if not already done
-    initMonacoEditor();
-    
-    if (isNew) {
-        // Clear form for new server
-        document.getElementById('serverCommand').value = '';
-        document.getElementById('serverArgs').innerHTML = '';
+    let serverData = {};
+    if (serverKey === 'new') {
+        // Provide a default structure for a new server
+        serverNameInput.value = `newServer${Date.now()}`;
+        serverNameInput.readOnly = false; // Allow editing name for new server
+        serverData = {
+            command: '', 
+            args: [], 
+            env: {},
+            sseUrl: '',
+            enableInspector: false,
+            inspectorPort: 7860
+        }; 
+        document.getElementById('serverConfigForm').reset(); // Clear form
+        document.getElementById('serverArgs').innerHTML = ''; // Clear dynamic fields
         document.getElementById('serverEnv').innerHTML = '';
         document.getElementById('serverType').value = 'subprocess';
         document.getElementById('sseUrlContainer').style.display = 'none';
         document.getElementById('enableInspector').checked = false;
         document.getElementById('inspectorOptionsContainer').style.display = 'none';
-        
-        // Set default JSON for new server
-        jsonEditor.setValue(JSON.stringify({
-            command: "",
-            args: [],
-            env: {}
-        }, null, 2));
+        if(jsonEditor) jsonEditor.setValue(''); // Clear JSON editor
     } else {
-        // Fill form with existing server config
-        const server = mcpServers[serverName];
-        document.getElementById('serverCommand').value = server.command || '';
-        
-        // Clear and populate args
-        document.getElementById('serverArgs').innerHTML = '';
-        if (server.args && Array.isArray(server.args)) {
-            server.args.forEach(arg => {
-                addServerArg(arg);
-            });
-        }
-        
-        // Clear and populate env vars
-        document.getElementById('serverEnv').innerHTML = '';
-        if (server.env) {
-            Object.entries(server.env).forEach(([key, value]) => {
-                addServerEnv(key, value);
-            });
-        }
-        
-        // Set connection type
-        const serverType = server.sseUrl ? 'sse' : 'subprocess';
-        document.getElementById('serverType').value = serverType;
-        document.getElementById('sseUrlContainer').style.display = serverType === 'sse' ? 'block' : 'none';
-        if (server.sseUrl) {
-            document.getElementById('sseUrl').value = server.sseUrl;
-        }
-        
-        // Set inspector settings
-        document.getElementById('enableInspector').checked = !!server.enableInspector;
-        document.getElementById('inspectorOptionsContainer').style.display = server.enableInspector ? 'block' : 'none';
-        if (server.inspectorPort) {
-            document.getElementById('inspectorPort').value = server.inspectorPort;
-        }
-        
-        // Set JSON editor with formatted config
-        jsonEditor.setValue(JSON.stringify(server, null, 2));
+        serverNameInput.value = serverKey;
+        serverNameInput.readOnly = true; // Cannot rename existing server via modal
+        // Deep clone the specific server config to edit
+        serverData = _.cloneDeep(mcpServers[serverKey] || {});
+        populateServerForm(serverData);
     }
+
+    // Store the initial state of the config being edited in the modal
+    modalOriginalConfig = _.cloneDeep(serverData);
+    hasModalChanges = false; // Reset change tracking
+    updateModalButtons(); // Show/hide buttons based on initial state (should be hidden)
     
-    // Add change listeners to form elements
-    document.getElementById('serverCommand').addEventListener('change', modalContentChanged);
-    document.getElementById('serverType').addEventListener('change', modalContentChanged);
-    document.getElementById('sseUrl').addEventListener('change', modalContentChanged);
-    
-    // Grey out and disable the inspector option (as requested)
-    const inspectorCheckbox = document.getElementById('enableInspector');
-    inspectorCheckbox.disabled = true;
-    inspectorCheckbox.parentElement.style.opacity = '0.5';
-    inspectorCheckbox.parentElement.title = 'Coming soon! MCP Inspector functionality will be added in a future update.';
-    document.getElementById('inspectorOptionsContainer').style.display = 'none';
-    
-    // Add change listener to the JSON editor
-    if (jsonEditor) {
-        jsonEditor.onDidChangeModelContent(() => {
-            if (currentEditorTab === 'json') {
-                modalContentChanged();
-            }
-        });
-    }
-    
-    // Start with form tab by default
-    switchEditorTab('form');
-    
-    // Reset the modal buttons state
-    updateModalButtons();
-    
-    // Show the modal
+    // Attach listeners for change detection within the modal
+    setupModalChangeListeners();
+
     modal.style.display = 'block';
+    switchEditorTab('form'); // Default to form view
 }
 
-// Add a new argument input row
+// Populate the form with server data
+function populateServerForm(serverData) {
+    document.getElementById('serverCommand').value = serverData.command || '';
+    
+    // Populate args
+    const argsContainer = document.getElementById('serverArgs');
+    argsContainer.innerHTML = '';
+    if (serverData.args && Array.isArray(serverData.args)) {
+        serverData.args.forEach(arg => addServerArg(arg));
+    }
+    
+    // Populate env vars
+    const envContainer = document.getElementById('serverEnv');
+    envContainer.innerHTML = '';
+    if (serverData.env && typeof serverData.env === 'object') {
+        Object.entries(serverData.env).forEach(([key, value]) => addServerEnv(key, value));
+    }
+
+    // Populate connection type
+    const serverType = serverData.sseUrl ? 'sse' : 'subprocess';
+    document.getElementById('serverType').value = serverType;
+    document.getElementById('sseUrlContainer').style.display = serverType === 'sse' ? 'block' : 'none';
+    if (serverData.sseUrl) {
+        document.getElementById('sseUrl').value = serverData.sseUrl;
+    }
+
+    // Populate inspector settings
+    document.getElementById('enableInspector').checked = !!serverData.enableInspector;
+    document.getElementById('inspectorOptionsContainer').style.display = serverData.enableInspector ? 'block' : 'none';
+    if (serverData.inspectorPort) {
+        document.getElementById('inspectorPort').value = serverData.inspectorPort;
+    }
+
+    // Update JSON editor if it exists
+    if (jsonEditor) {
+        jsonEditor.setValue(JSON.stringify(serverData, null, 2));
+    }
+}
+
+// Setup listeners for input changes within the modal
+function setupModalChangeListeners() {
+    const form = document.getElementById('serverConfigForm');
+    // Remove previous listeners to avoid duplicates
+    form.removeEventListener('input', modalContentChanged);
+    form.removeEventListener('change', modalContentChanged); // For checkboxes/selects
+    if (jsonEditor) {
+         // Assuming monaco editor has a change listener mechanism
+         jsonEditor.getModel()?.onDidChangeContent(modalContentChanged);
+    }
+
+    // Add new listeners
+    form.addEventListener('input', modalContentChanged);
+    form.addEventListener('change', modalContentChanged);
+     if (jsonEditor) {
+         jsonEditor.getModel()?.onDidChangeContent(modalContentChanged);
+    }
+}
+
+// Function called when modal content might have changed
+function modalContentChanged() {
+    // Get current state from the active editor tab
+    let currentModalState = {};
+    if (currentEditorTab === 'form') {
+        currentModalState = getCurrentFormState();
+    } else if (jsonEditor) {
+        try {
+            currentModalState = JSON.parse(jsonEditor.getValue());
+        } catch (e) {
+            // Invalid JSON, consider it changed or handle differently
+            hasModalChanges = true;
+            updateModalButtons();
+            return;
+        }
+    }
+
+    // Compare current state with the state when the modal was opened
+    hasModalChanges = !_.isEqual(currentModalState, modalOriginalConfig);
+    updateModalButtons();
+}
+
+// Helper to get the current state from the form
+function getCurrentFormState() {
+    const config = {
+        command: document.getElementById('serverCommand').value || '',
+        args: [],
+        env: {}
+    };
+    document.querySelectorAll('#serverArgs .arg-item input').forEach(input => {
+        if (input.value.trim()) config.args.push(input.value.trim());
+    });
+    document.querySelectorAll('#serverEnv .env-item').forEach(item => {
+        const keyInput = item.querySelector('.env-key-input');
+        const valueInput = item.querySelector('.env-value-input');
+        if (keyInput && valueInput && keyInput.value.trim()) {
+            config.env[keyInput.value.trim()] = valueInput.value;
+        }
+    });
+    const serverType = document.getElementById('serverType').value;
+    if (serverType === 'sse') {
+        config.sseUrl = document.getElementById('sseUrl').value || '';
+    }
+    if (document.getElementById('enableInspector').checked) {
+        config.enableInspector = true;
+        config.inspectorPort = parseInt(document.getElementById('inspectorPort').value) || 7860;
+    }
+    return config;
+}
+
+// Update visibility of Save/Reset buttons inside the modal
+function updateModalButtons() {
+    const resetButton = document.getElementById('serverConfigModal').querySelector('.reset-button');
+    // Save button is always visible, but could be disabled
+    // const saveButton = document.getElementById('serverConfigModal').querySelector('.save-button'); 
+
+    if (resetButton) {
+        resetButton.style.display = hasModalChanges ? 'inline-block' : 'none';
+    }
+    // If you want to disable the save button when no changes:
+    // if (saveButton) { saveButton.disabled = !hasModalChanges; }
+}
+
+// Close any modal
+function closeModal(modalId) {
+    const modal = document.getElementById(modalId);
+    if (modal) {
+        if (modalId === 'serverConfigModal' && hasModalChanges) {
+            // Shake animation and warning (already handled by click outside listener, but good to have here too)
+            const modalContent = modal.querySelector('.modal-content');
+            modalContent.classList.add('shake-animation');
+            showWarning("You have unsaved changes. Please save or reset.");
+            setTimeout(() => modalContent.classList.remove('shake-animation'), 500);
+            return; // Don't close if changes exist
+        }
+        modal.style.display = 'none';
+        // Clean up modal-specific state if needed
+        if (modalId === 'serverConfigModal') {
+             modalOriginalConfig = {}; // Clear original config
+             hasModalChanges = false;
+        }
+    }
+}
+
+// Save the server configuration from the modal
+function saveServerConfig() {
+    const serverName = document.getElementById('serverName').value;
+    if (!serverName) {
+        showWarning('Server name cannot be empty');
+        return;
+    }
+    
+    let configData = {};
+    try {
+        if (currentEditorTab === 'form') {
+             configData = getCurrentFormState();
+        } else if (jsonEditor) {
+            configData = JSON.parse(jsonEditor.getValue());
+        }
+    } catch (e) {
+        showWarning('Cannot save: Invalid JSON format. ' + e.message);
+        return;
+    }
+
+    console.log(`Saving config for server: ${serverName}`, configData);
+
+    // Update the main mcpServers object
+    if (!mcpServers[serverName]) { // It's a new server
+        // Make sure the name isn't already taken (case-insensitive check maybe?)
+        if (Object.keys(mcpServers).some(key => key.toLowerCase() === serverName.toLowerCase())) {
+            showWarning(`Server name "${serverName}" already exists. Choose a unique name.`);
+            return;
+        }
+    }
+    mcpServers[serverName] = configData;
+    
+    // Trigger global change detection
+    configChanged(); 
+    
+    renderServers(); // Re-render the server list
+    closeModal('serverConfigModal');
+    showToast(`Configuration for ${serverName} updated locally. Click Save Changes to persist.`, 'success');
+}
+
+// Reset the server configuration in the modal to its original state
+function resetServerConfig() {
+    console.log('Resetting modal content to original');
+    populateServerForm(modalOriginalConfig); // Repopulate form and JSON editor
+    hasModalChanges = false;
+    updateModalButtons();
+}
+
+// Function to add a new argument row to the form
 function addServerArg(value = '') {
     const container = document.getElementById('serverArgs');
     const row = document.createElement('div');
@@ -1227,135 +1450,6 @@ function removeElement(element) {
     if (element && element.parentNode) {
         element.parentNode.removeChild(element);
         modalContentChanged();
-    }
-}
-
-// Function to track changes in the modal
-function modalContentChanged() {
-    hasModalChanges = true;
-    updateModalButtons();
-}
-
-// Function to update the modal buttons based on whether there are changes
-function updateModalButtons() {
-    const saveButton = document.querySelector('#serverConfigModal .modal-buttons .save-button');
-    const resetButton = document.querySelector('#serverConfigModal .modal-buttons .reset-button');
-    
-    if (saveButton && resetButton) {
-        saveButton.style.display = hasModalChanges ? 'inline-block' : 'inline-block'; // Always show save
-        resetButton.style.display = hasModalChanges ? 'inline-block' : 'none'; // Only show reset when changes exist
-    }
-}
-
-// Override the original saveServerConfig to handle both form and JSON editors
-function saveServerConfig() {
-    try {
-        let config;
-        
-        // Get server name from the form (same for both tabs)
-        const serverNameInput = document.getElementById('serverName');
-        let serverName = serverNameInput.value.trim();
-        
-        if (currentEditorTab === 'json') {
-            // Get config from JSON editor
-            try {
-                config = JSON.parse(jsonEditor.getValue());
-            } catch (e) {
-                showWarning('Invalid JSON: ' + e.message);
-                return;
-            }
-        } else {
-            // Get config from form (original implementation)
-            const serverCommand = document.getElementById('serverCommand').value.trim();
-            if (!serverCommand) {
-                showWarning('Command is required');
-                return;
-            }
-            
-            config = {
-                command: serverCommand,
-                args: [],
-                env: {}
-            };
-            
-            // Gather args
-            document.querySelectorAll('#serverArgs .arg-item').forEach(item => {
-                const input = item.querySelector('input');
-                if (input && input.value.trim()) {
-                    config.args.push(input.value.trim());
-                }
-            });
-            
-            // Gather env vars
-            document.querySelectorAll('#serverEnv .env-item').forEach(item => {
-                const keyInput = item.querySelector('.env-key-input');
-                const valueInput = item.querySelector('.env-value-input');
-                if (keyInput && valueInput && keyInput.value.trim()) {
-                    config.env[keyInput.value.trim()] = valueInput.value;
-                }
-            });
-            
-            // Check if it's an SSE connection
-            const serverType = document.getElementById('serverType').value;
-            if (serverType === 'sse') {
-                const sseUrl = document.getElementById('sseUrl').value.trim();
-                if (!sseUrl) {
-                    showWarning('SSE URL is required for SSE connections');
-                    return;
-                }
-                config.sseUrl = sseUrl;
-            }
-            
-            // Add inspector settings if enabled
-            if (document.getElementById('enableInspector').checked) {
-                config.enableInspector = true;
-                config.inspectorPort = parseInt(document.getElementById('inspectorPort').value);
-            }
-        }
-        
-        // Handle creating a new server
-        if (!serverName || serverName === 'new') {
-            // For new servers, prompt for a name
-            serverName = prompt('Enter a name for this MCP server:');
-            if (!serverName) return; // User cancelled
-            
-            if (mcpServers[serverName]) {
-                // Name already exists
-                if (!confirm(`Server "${serverName}" already exists. Overwrite it?`)) {
-                    return;
-                }
-            }
-        }
-        
-        // Store the config and close the modal
-        mcpServers[serverName] = config;
-        renderServers();
-        configChanged();
-        
-        // Reset changes flag before closing
-        hasModalChanges = false;
-        closeModal('serverConfigModal');
-        showToast(`Server "${serverName}" configuration saved`);
-    } catch (error) {
-        console.error('Error saving server config:', error);
-        showWarning('Error saving server configuration: ' + error.message);
-    }
-}
-
-// Function to reset server configuration changes
-function resetServerConfig() {
-    if (confirm("Are you sure you want to discard your changes?")) {
-        hasModalChanges = false;
-        const serverName = document.getElementById('serverName').value.trim();
-        
-        // Reopen the server config to reset all fields
-        if (serverName && serverName !== 'new') {
-            openServerConfig(serverName);
-        } else {
-            openServerConfig('new');
-        }
-        
-        showToast('Changes discarded');
     }
 }
 
@@ -1399,18 +1493,19 @@ async function initializeApp() {
         }
     });
 
-    // Setup event listeners for preset buttons (example)
-    // Assuming buttons exist with appropriate IDs
-    // document.getElementById('savePresetBtn').addEventListener('click', saveCurrentAsPreset);
-    // document.getElementById('deletePresetBtn').addEventListener('click', deleteCurrentPreset);
-
     // Load initial data
     await loadAppSettings(); // Load settings first
     renderClientSidebar(); // Render sidebar based on loaded settings
-    updateConfigModeIndicator(); // Update mode indicator based on initial settings
-
-    // Load the initial configuration based on sync mode or last loaded client
+    
+    // Set default state to servers mode
+    isServersMode = true;
+    
+    // Load the initial configuration
     await loadInitialConfiguration(lastLoadedClientId);
+    
+    // Update UI to reflect correct state
+    updateConfigModeIndicator();
+    renderServers();
 
     await loadPresetsList();
 
@@ -1418,60 +1513,8 @@ async function initializeApp() {
     document.getElementById('saveChangesBtn').addEventListener('click', saveChanges);
     document.getElementById('resetChangesBtn').addEventListener('click', resetConfiguration);
 
-    // Setup listener for sync toggle
-    document.getElementById('syncClientsToggle').addEventListener('change', toggleClientSync);
-    
     // Setup listeners for modal interactions (close button, save, reset)
     document.getElementById('serverConfigModal').querySelector('.close-button').addEventListener('click', () => closeModal('serverConfigModal'));
-    document.getElementById('serverConfigModal').querySelector('.save-button').addEventListener('click', saveServerConfig);
-    document.getElementById('serverConfigModal').querySelector('.reset-button').addEventListener('click', resetServerConfig);
-    
-    // Listener for clicking outside the modal to close it (only if no unsaved changes)
-    document.getElementById('serverConfigModal').addEventListener('click', (event) => {
-        if (event.target === event.currentTarget) { // Check if click is on the background
-             if (hasModalChanges) {
-                 const modalContent = document.getElementById('serverConfigModal').querySelector('.modal-content');
-                 modalContent.classList.add('shake-animation');
-                 showWarning("You have unsaved changes. Please save or reset.");
-                 setTimeout(() => modalContent.classList.remove('shake-animation'), 500); // Remove shake after animation
-            } else {
-                closeModal('serverConfigModal');
-            }
-        }
-    });
-    
-    // Setup listeners for editor tabs
-    document.getElementById('formEditorTab').addEventListener('click', () => switchEditorTab('form'));
-    document.getElementById('jsonEditorTab').addEventListener('click', () => switchEditorTab('json'));
-
-    // Initialize Monaco editor (if needed for JSON tab)
-    initMonacoEditor();
-
-    // Add event delegation for server card actions (edit, toggle)
-    document.getElementById('serversView').addEventListener('click', (event) => {
-        const target = event.target;
-        const serverCard = target.closest('.server-card');
-        if (!serverCard) return;
-        const serverKey = serverCard.dataset.serverKey;
-
-        if (target.classList.contains('edit-button')) {
-            openServerConfig(serverKey);
-        } else if (target.closest('.toggle-switch')) {
-            // Find the actual input checkbox
-            const checkbox = target.closest('.toggle-switch').querySelector('input[type="checkbox"]');
-            if (checkbox) {
-                toggleServerEnabled(serverKey, checkbox.checked);
-            }
-        }
-    });
-
-    // Add listener for the global "Add Server" button
-    document.getElementById('topAddServerButton').addEventListener('click', () => openServerConfig('new'));
-
-    // Initial check for config differences if sync is on
-    if (settings.syncClients) {
-        await checkOriginalConfigDifferences();
-    }
     
     // Setup hover/click listeners for env vars
     setupEnvVarInteraction();
@@ -1528,6 +1571,7 @@ window.deleteCurrentPreset = deleteCurrentPreset;
 
 // Export client functions
 window.toggleClientSync = toggleClientSync;
+window.openClientModal = openClientModal;
 
 // Export server config functions
 window.openServerConfig = openServerConfig;
@@ -1535,6 +1579,8 @@ window.addServerArg = addServerArg;
 window.addServerEnv = addServerEnv;
 window.removeElement = removeElement;
 window.saveServerConfig = saveServerConfig;
+window.confirmDeleteServer = confirmDeleteServer;
+window.deleteServer = deleteServer;
 
 // Add new export for clipboard copy
 window.copyEnvVarToClipboard = copyEnvVarToClipboard;
@@ -2406,7 +2452,12 @@ function selectServersMode() {
     if (topAddButton) {
         topAddButton.style.display = 'flex';
     }
-    renderServers(); // Re-render to show the bottom button
+    
+    // Update config mode indicator
+    updateConfigModeIndicator();
+    
+    // Make sure servers are correctly displayed
+    renderServers();
 }
 
 // Function to toggle server enabled state
@@ -2464,15 +2515,19 @@ function setupEnvVarInteraction() {
 
     serversView.addEventListener('mouseover', (event) => {
         const envValueSpan = event.target.closest('.env-value');
-        if (envValueSpan && envValueSpan.parentElement.dataset.sensitive === 'true') {
+        if (envValueSpan) {
             const realValue = envValueSpan.dataset.value;
-            envValueSpan.textContent = realValue; // Reveal on hover
+            // For sensitive values, only show when hover
+            if (envValueSpan.parentElement.dataset.sensitive === 'true') {
+                envValueSpan.textContent = realValue; // Reveal on hover
+            }
+            // No need to change display for non-sensitive values as they expand via CSS
         }
     });
 
     serversView.addEventListener('mouseout', (event) => {
         const envValueSpan = event.target.closest('.env-value');
-        // Only re-mask if shift is NOT pressed
+        // Only re-mask sensitive values
         if (envValueSpan && envValueSpan.parentElement.dataset.sensitive === 'true' && !isShiftPressed) {
             envValueSpan.textContent = '********'; // Re-mask when not hovering
         }
@@ -2480,10 +2535,43 @@ function setupEnvVarInteraction() {
 
     serversView.addEventListener('click', (event) => {
         const envPairDiv = event.target.closest('.env-var-pair');
-        if (envPairDiv && envPairDiv.dataset.sensitive === 'true') {
+        if (envPairDiv && isShiftPressed) {
             const key = envPairDiv.dataset.key;
             const value = envPairDiv.dataset.value;
             copyEnvVarToClipboard(key, value, envPairDiv); // Pass the element for feedback
         }
     });
+}
+
+// Function to open the client modal for adding new or editing existing client
+function openClientModal(clientId) {
+    const modal = document.getElementById('clientModal');
+    const title = document.getElementById('clientModalTitle');
+    const nameInput = document.getElementById('clientModalName');
+    const pathInput = document.getElementById('clientModalConfigPath');
+    const idInput = document.getElementById('clientModalId');
+    const deleteButton = document.getElementById('deleteClientButton');
+    
+    // Clear previous values
+    nameInput.value = '';
+    pathInput.value = '';
+    idInput.value = '';
+    
+    if (clientId === 'new') {
+        // Adding a new client
+        title.textContent = 'Add Custom MCP Client';
+        deleteButton.style.display = 'none';
+    } else {
+        // Editing existing client
+        const client = clientSettings.clients[clientId];
+        if (client) {
+            title.textContent = 'Edit MCP Client';
+            nameInput.value = client.name || '';
+            pathInput.value = client.configPath || '';
+            idInput.value = clientId;
+            deleteButton.style.display = 'block';
+        }
+    }
+    
+    modal.style.display = 'block';
 }

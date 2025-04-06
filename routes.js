@@ -4,28 +4,39 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import _ from 'lodash'; // Import lodash for deep comparison
 
+// Check DEBUG environment variable
+const IS_DEBUG_MODE = ['true', '1'].includes(process.env.DEBUG?.toLowerCase());
+
 // Get __dirname equivalent in ES modules
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIGS_DIR = path.join(__dirname, 'configs'); // Directory for client-specific configs
 const MCP_SERVER_REGISTRY_PATH = path.join(__dirname, 'mcp_server_registry.json'); // Path for the server registry
+const SYNC_CONFIGS_DIR = path.join(__dirname, 'sync_configs'); // Directory for sync group configs
 
-// Default settings
-let settings = {
+// Default settings structure
+const defaultSettings = {
     maxBackups: 10,
     clients: {
         claude: {
             name: "Claude Desktop",
+            configPath: null, // Will be auto-detected
             enabled: true,
-            configPath: null
+            builtIn: true,
+            syncGroup: null
         },
         cursor: {
-            name: "Cursor", 
+            name: "Cursor",
+            configPath: null, // Will be auto-detected
             enabled: true,
-            configPath: null
+            builtIn: true,
+            syncGroup: null
         }
     },
-    syncClients: false
+    syncGroups: {}
+    // Removed syncClients boolean
 };
+
+let settings = _.cloneDeep(defaultSettings);
 
 // Settings files path
 const SETTINGS_PATH = path.join(__dirname, 'settings.json');
@@ -39,9 +50,10 @@ let initialActiveConfig = { mcpServers: {} };
 async function ensureConfigsDir() {
     try {
         await fs.mkdir(CONFIGS_DIR, { recursive: true });
-        console.log(`Ensured configs directory exists: ${CONFIGS_DIR}`);
+        await fs.mkdir(SYNC_CONFIGS_DIR, { recursive: true }); // Ensure sync dir exists
+        console.log(`Ensured config directories exist: ${CONFIGS_DIR}, ${SYNC_CONFIGS_DIR}`);
     } catch (error) {
-        console.error(`Failed to create configs directory ${CONFIGS_DIR}:`, error);
+        console.error(`Failed to create config directories:`, error);
     }
 }
 
@@ -64,10 +76,16 @@ async function ensureJsonFile(filePath, defaultContent = {}) {
 // Load settings on startup
 async function loadSettings() {
     try {
-        await ensureJsonFile(SETTINGS_PATH, settings); // Use ensureJsonFile
+        await ensureJsonFile(SETTINGS_PATH, defaultSettings); // Use ensureJsonFile with default structure
         const data = await fs.readFile(SETTINGS_PATH, 'utf8');
-        settings = JSON.parse(data);
-        console.log('Loaded settings:', settings);
+        let loadedSettings = JSON.parse(data);
+
+        // Merge loaded settings with defaults to ensure all keys exist
+        settings = _.merge({}, defaultSettings, loadedSettings);
+
+        if (IS_DEBUG_MODE) {
+            console.log('Loaded settings:', JSON.stringify(settings, null, 2));
+        }
 
         // Ensure client paths are set if null
         const defaultPaths = getDefaultConfigPaths();
@@ -90,6 +108,9 @@ async function loadSettings() {
             console.log('Updated settings.json with default paths.');
         }
 
+        // Initialize syncGroups if missing
+        if (!settings.syncGroups) settings.syncGroups = {};
+
     } catch (error) {
         // Handle potential JSON parse errors or other read errors
          console.error('Failed to load or parse settings.json, using defaults:', error);
@@ -97,7 +118,8 @@ async function loadSettings() {
           const defaultPaths = getDefaultConfigPaths();
           if (!settings.clients?.claude?.configPath) settings.clients.claude.configPath = defaultPaths.CLAUDE_CONFIG_PATH;
           if (!settings.clients?.cursor?.configPath) settings.clients.cursor.configPath = defaultPaths.CURSOR_CONFIG_PATH;
-          settings.syncClients = false; // Ensure sync is off if settings fail
+          // Initialize syncGroups if missing
+          if (!settings.syncGroups) settings.syncGroups = {};
     }
 
     // Ensure other essential files exist
@@ -138,12 +160,19 @@ function getDefaultConfigPaths() {
 // Get client config path from ID
 function getClientConfigPath(clientId) {
     if (settings.clients[clientId]) {
-        return settings.clients[clientId].configPath;
+        const client = settings.clients[clientId];
+        // If client is in a sync group, return the group's path
+        if (client.syncGroup && settings.syncGroups[client.syncGroup]) {
+            return settings.syncGroups[client.syncGroup].configPath;
+        }
+        // Otherwise, return its individual path (could be original or specific)
+        return client.configPath || getClientSpecificConfigPath(clientId);
     }
     return null;
 }
 
 // Get path for client-specific config in the 'configs' directory
+// This is used when a client is NOT synced
 function getClientSpecificConfigPath(clientId) {
     if (!clientId) return null;
     return path.join(CONFIGS_DIR, `${clientId}.json`);
@@ -161,27 +190,35 @@ function getEnabledClientConfigPaths() {
 async function readManagedConfigFile(clientId = null, filePathOverride = null) {
     let filePath = filePathOverride;
     let configSource = 'unknown'; // For logging
-    let isClientSpecific = false;
+    let client = clientId ? settings.clients[clientId] : null;
+    let syncGroupId = client?.syncGroup;
 
-    if (!filePath) { // Determine filePath if not overridden
-        if (!settings.syncClients && clientId) {
-            // Sync OFF: Try reading the client-specific config first
+    if (!filePath) {
+        if (syncGroupId && settings.syncGroups[syncGroupId]) {
+             // --- Client is in a Sync Group ---
+             filePath = settings.syncGroups[syncGroupId].configPath;
+             configSource = `sync group (${syncGroupId}: ${filePath})`;
+        } else if (clientId) {
+            // --- Sync OFF, Client Specified (use client-specific managed file) ---
             filePath = getClientSpecificConfigPath(clientId);
-            configSource = `client-specific (${filePath})`;
-            isClientSpecific = true;
+            configSource = `client-specific (${clientId}: ${filePath})`;
         } else {
-            // Sync ON or no specific client: Use the main config file
-            filePath = CONFIG_PATH;
-            configSource = `main config (${filePath})`;
+            // --- No Client or Sync Group (Shouldn't happen in normal flow for read?) ---
+             // This case might be hit for the main aggregated view if not handled earlier,
+             // or potentially if sync is ON but somehow no client context provided.
+             // Let's default to reading the *old* main config path for now, though this might need refinement.
+             filePath = CONFIG_PATH; 
+             configSource = `fallback main config (${filePath})`;
+             console.warn(`Reading from fallback main config path: ${filePath}. This might indicate an unexpected state.`);
         }
-    } else {
-        configSource = `override (${filePath})`; // If path was provided
     }
-
 
     try {
         const data = await fs.readFile(filePath, 'utf8');
-        console.log(`Reading active config from ${configSource}`);
+        if (IS_DEBUG_MODE) {
+            console.log(`Reading active config from ${configSource}. Contents:
+${data.substring(0, 500)}${data.length > 500 ? '...' : ''}`);
+        }
         try {
             return JSON.parse(data);
         } catch (parseError) {
@@ -191,20 +228,24 @@ async function readManagedConfigFile(clientId = null, filePathOverride = null) {
     } catch (error) {
         if (error.code === 'ENOENT') {
             console.log(`Active config file not found at ${filePath}.`);
-            if (isClientSpecific) {
-                 // Fallback: Try reading the original client config file if client-specific failed
-                 const originalPath = getClientConfigPath(clientId);
-                 if (!originalPath) {
-                     console.error(`No original config path defined for client ${clientId}. Returning empty config.`);
-                     return { mcpServers: {} }; // Return empty if no path
-                 }
-                 console.log(`Falling back to original client config: ${originalPath}`);
-                 return readManagedConfigFile(clientId, originalPath); // Recursive call with override
+            if (syncGroupId && settings.syncGroups[syncGroupId]) {
+                 // --- Client is in a Sync Group ---
+                 filePath = settings.syncGroups[syncGroupId].configPath;
+                 configSource = `sync group (${syncGroupId}: ${filePath})`;
+            } else if (clientId) {
+                // --- Sync OFF, Client Specified (use client-specific managed file) ---
+                filePath = getClientSpecificConfigPath(clientId);
+                configSource = `client-specific (${clientId}: ${filePath})`;
             } else {
-                 // If main config or original client config not found, return empty
-                 console.log(`Returning empty config for ${filePath}`);
-                 return { mcpServers: {} };
+                // --- No Client or Sync Group (Shouldn't happen in normal flow for read?) ---
+                 // This case might be hit for the main aggregated view if not handled earlier,
+                 // or potentially if sync is ON but somehow no client context provided.
+                 // Let's default to reading the *old* main config path for now, though this might need refinement.
+                 filePath = CONFIG_PATH; 
+                 configSource = `fallback main config (${filePath})`;
+                 console.warn(`Reading from fallback main config path: ${filePath}. This might indicate an unexpected state.`);
             }
+            return readManagedConfigFile(clientId, filePath); // Recursive call with override
         } else {
             console.error(`Failed to read active config file ${filePath}:`, error);
             return { mcpServers: {} }; // Return empty config on other errors
@@ -216,6 +257,9 @@ async function readManagedConfigFile(clientId = null, filePathOverride = null) {
 async function readServerRegistry() {
     try {
         const data = await fs.readFile(MCP_SERVER_REGISTRY_PATH, 'utf8');
+        if (IS_DEBUG_MODE) {
+            console.log('Reading server registry:', data.substring(0, 500) + (data.length > 500 ? '...' : ''));
+        }
         return JSON.parse(data);
     } catch (error) {
         if (error.code === 'ENOENT') {
@@ -239,9 +283,11 @@ async function writeServerRegistry(registryData) {
 
 // Helper function to merge configurations
 function mergeConfigs(savedConfig, defaultConfig) {
-    console.log('Merging configs:');
-    console.log('Saved servers:', Object.keys(savedConfig.mcpServers || {}));
-    console.log('Default servers:', Object.keys(defaultConfig));
+    if (IS_DEBUG_MODE) {
+        console.log('Merging configs:');
+        console.log('Saved servers:', Object.keys(savedConfig.mcpServers || {}));
+        console.log('Default servers:', Object.keys(defaultConfig));
+    }
     
     const mergedServers = {};
     
@@ -369,37 +415,33 @@ function compareConfigs(config1, config2) {
 
 // Endpoint to fetch current settings
 router.get('/api/settings', (req, res) => {
-    console.log('GET /api/settings');
-    // Return a copy to prevent accidental modification
-    res.json({ ...settings });
+    if (IS_DEBUG_MODE) {
+        console.log('GET /api/settings - Returning current settings');
+    }
+    res.json(settings);
 });
 
 // Endpoint to update settings
 router.post('/api/settings', async (req, res) => {
-    console.log('POST /api/settings with data:', req.body);
     const newSettings = req.body;
+    console.log('POST /api/settings - Updating settings');
+    
     // Basic validation
-    if (!newSettings || typeof newSettings !== 'object') {
+    if (!newSettings || !newSettings.clients) {
         return res.status(400).json({ error: 'Invalid settings format' });
     }
 
-    // Validate specific settings (example)
-    if (typeof newSettings.syncClients !== 'boolean') {
-         return res.status(400).json({ error: 'Invalid syncClients value' });
-    }
-    // Add more validation as needed for clients, maxBackups etc.
-
-
     try {
-        // Update the settings object
-        settings = { ...settings, ...newSettings }; // Simple merge, consider deep merge if needed
-
-        // Persist updated settings
+        // Merge carefully? Or just overwrite?
+        // Overwriting is simpler but might lose keys if frontend doesn't send everything.
+        // Let's merge to be safer, assuming frontend sends updates.
+        settings = _.merge({}, settings, newSettings);
+        
         await fs.writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2));
-        console.log('Settings updated successfully:', settings);
-        res.json({ success: true, settings: settings });
+        console.log('Settings saved to settings.json');
+        res.json({ success: true, settings });
     } catch (error) {
-        console.error('Failed to update settings:', error);
+        console.error('Error saving settings:', error);
         res.status(500).json({ error: 'Failed to save settings' });
     }
 });
@@ -421,7 +463,7 @@ router.get('/api/clients', async (req, res) => {
         }
         // Also check metadata for the client-specific config if sync is off
         let specificMetadata = { exists: false, mtime: null };
-        if (!settings.syncClients) {
+        if (!settings.syncGroups) {
             const specificPath = getClientSpecificConfigPath(id);
              try {
                 specificMetadata = await getFileMetadata(specificPath);
@@ -440,58 +482,77 @@ router.get('/api/clients', async (req, res) => {
 });
 
 
-// GET MCP config
+// API endpoint to get the current configuration state
 router.get('/api/config', async (req, res) => {
-    const clientId = req.query.clientId; // Get clientId if provided (for non-sync mode)
-    console.log(`GET /api/config - Client ID: ${clientId}, Sync Mode: ${settings.syncClients}`);
+    const clientId = req.query.clientId; // Get client ID from query param
+    const client = clientId ? settings.clients[clientId] : null;
+    const syncGroupId = client?.syncGroup;
+    
+    console.log(`GET /api/config - Request for client: ${clientId || '[servers view]'}, Sync Group: ${syncGroupId || '[none]'}`);
 
     try {
-        // 1. Read the full server registry
-        const serverRegistry = await readServerRegistry();
+        if (syncGroupId && settings.syncGroups[syncGroupId]) {
+             // --- Client is in a Sync Group ---
+             const groupConfigPath = settings.syncGroups[syncGroupId].configPath;
+             const config = await readManagedConfigFile(clientId, groupConfigPath);
+             res.json(config || { mcpServers: {} });
+        } else if (clientId) {
+            // --- Sync OFF, Client Specified ---
+            const config = await readManagedConfigFile(clientId);
+            res.json(config || { mcpServers: {} });
+        } else {
+            // --- No Client Specified (Server Configuration View) ---
+            console.log('Aggregating configs for Server Configuration view');
+            const aggregatedServers = {};
+            const serverSources = {};
 
-        // 2. Read the currently active configuration file
-        const activeConfig = await readManagedConfigFile(clientId);
-        // Store the initial state for comparison, only the mcpServers part
-        initialActiveConfig = { mcpServers: _.cloneDeep(activeConfig.mcpServers || {}) }; 
-
-        // 3. Merge active state into the registry data
-        const combinedConfig = _.cloneDeep(serverRegistry); // Start with registry content
-        if (!combinedConfig.mcpServers || typeof combinedConfig.mcpServers !== 'object') {
-            console.warn("Registry mcpServers format is invalid or missing. Initializing.");
-            combinedConfig.mcpServers = {}; // Ensure it's an object
-        }
-        
-        // Ensure all servers in the registry have an 'enabled' flag (default to false)
-        Object.values(combinedConfig.mcpServers).forEach(server => {
-            server.enabled = false; 
-        });
-
-        // Mark servers present in the active config as enabled and update registry if needed
-        if (activeConfig.mcpServers && typeof activeConfig.mcpServers === 'object') {
-            Object.entries(activeConfig.mcpServers).forEach(([serverKey, activeServerData]) => {
-                if (combinedConfig.mcpServers[serverKey]) {
-                    // Server exists in registry, mark as enabled
-                    combinedConfig.mcpServers[serverKey].enabled = true;
-                    // Optional: Update registry entry details from active config?
-                    // Let's overwrite registry details with active ones IF they differ significantly, 
-                    // but prioritize just setting the enabled flag.
-                    // For now, simple enable flag setting.
-                } else {
-                    // Server exists in active config but not registry? Add it to the combined view.
-                    console.warn(`Server '${serverKey}' found in active config but not in registry. Adding to combined view.`);
-                    combinedConfig.mcpServers[serverKey] = { ...activeServerData, enabled: true };
-                    // We should probably add this to the actual registry file on save (POST)
+            for (const id in settings.clients) {
+                const currentClient = settings.clients[id];
+                if (currentClient.enabled) {
+                    let clientConfig;
+                    if (currentClient.syncGroup && settings.syncGroups[currentClient.syncGroup]) {
+                        // Read from sync group config if part of one
+                        clientConfig = await readConfigFile(settings.syncGroups[currentClient.syncGroup].configPath);
+                    } else {
+                        // Read from individual managed config
+                        clientConfig = await readManagedConfigFile(id);
+                    }
+                    
+                    if (clientConfig && clientConfig.mcpServers) {
+                        Object.entries(clientConfig.mcpServers).forEach(([name, serverConf]) => {
+                            const serverKey = `${name}`; 
+                            
+                            if (!aggregatedServers[serverKey]) {
+                                aggregatedServers[serverKey] = _.cloneDeep(serverConf);
+                                serverSources[serverKey] = [id]; // Store source ID
+                            } else {
+                                if (!_.isEqual(aggregatedServers[serverKey], serverConf)) {
+                                    if (!serverSources[serverKey].includes(id)) {
+                                        serverSources[serverKey].push(id);
+                                        aggregatedServers[serverKey]._conflicts = true;
+                                    }
+                                } else if (!serverSources[serverKey].includes(id)){
+                                    serverSources[serverKey].push(id);
+                                }
+                            }
+                        });
+                    }
                 }
+            }
+            
+            Object.keys(aggregatedServers).forEach(serverKey => {
+                 const sourceIds = serverSources[serverKey] || [];
+                 aggregatedServers[serverKey]._sources = sourceIds.map(cid => settings.clients[cid]?.name || cid);
+                 if (!aggregatedServers[serverKey]._conflicts) {
+                     aggregatedServers[serverKey]._conflicts = false;
+                 }
             });
+            
+            res.json({ mcpServers: aggregatedServers });
         }
-        
-        // Log the initial active config for debugging comparison issues
-        console.log("Initial active config stored:", JSON.stringify(initialActiveConfig.mcpServers || {}, null, 2));
-
-        res.json(combinedConfig); // Return the combined view
     } catch (error) {
-        console.error("Error fetching combined config:", error);
-        res.status(500).send(`Failed to get configuration: ${error.message}`);
+        console.error('Error in /api/config:', error);
+        res.status(500).json({ error: 'Failed to get configuration', details: error.message });
     }
 });
 
@@ -540,97 +601,54 @@ router.get('/api/config/:clientId', async (req, res) => {
     }
 });
 
-// POST MCP config - Updates registry AND active config file
+// API: Save configuration (handles sync groups)
 router.post('/api/config', async (req, res) => {
-    const receivedConfig = req.body; // This should contain the FULL config from the client (with enabled flags)
     const clientId = req.query.clientId;
-    console.log(`POST /api/config - Client ID: ${clientId}, Sync Mode: ${settings.syncClients}`);
-    // console.log("Received config data:", JSON.stringify(receivedConfig, null, 2)); // Debugging
+    const client = clientId ? settings.clients[clientId] : null;
+    const syncGroupId = client?.syncGroup;
+    const configData = req.body; // { mcpServers: { ... } }
 
-    if (!receivedConfig || typeof receivedConfig.mcpServers !== 'object') {
-        return res.status(400).send('Invalid configuration data format received.');
+    console.log(`POST /api/config - Client: ${clientId || '[servers view]'}, Sync Group: ${syncGroupId || '[none]'}`);
+
+    if (!configData || typeof configData.mcpServers !== 'object') {
+        return res.status(400).json({ error: 'Invalid configuration data format' });
     }
 
     try {
-        // 1. Update the Server Registry
-        const serverRegistry = await readServerRegistry();
-        if (!serverRegistry.mcpServers) serverRegistry.mcpServers = {};
+        let savePath;
+        let affectedClientIds = [];
 
-        Object.entries(receivedConfig.mcpServers).forEach(([key, serverDataFromClient]) => {
-             // Add or update the server in the registry
-             // Remove the 'enabled' flag before saving to registry
-             const { enabled, ...serverDetailsToSave } = serverDataFromClient;
-             serverRegistry.mcpServers[key] = serverDetailsToSave; 
-             // console.log(`Updating registry for ${key}:`, serverDetailsToSave); // Debug
-        });
-        await writeServerRegistry(serverRegistry);
-
-        // 2. Prepare the configuration to be saved to the active file (only enabled servers)
-        const activeConfigToSave = { mcpServers: {} };
-        Object.entries(receivedConfig.mcpServers).forEach(([key, serverDataFromClient]) => {
-            if (serverDataFromClient.enabled === true) {
-                // Only include enabled servers in the active config file
-                const { enabled, ...serverDetailsToSave } = serverDataFromClient; // Remove transient 'enabled' flag
-                activeConfigToSave.mcpServers[key] = serverDetailsToSave;
-            }
-        });
-
-        // 3. Determine the target file path for the active config
-        let targetPath;
-        let targetDescription;
-         if (!settings.syncClients && clientId) {
-            // Sync OFF: Save to client-specific config file in ./configs/
-            targetPath = getClientSpecificConfigPath(clientId);
-            targetDescription = `client-specific config (${targetPath})`;
-            // We also need to write to the ORIGINAL client path if it exists and client is enabled?
-            // Let's simplify: When sync is OFF, we ONLY manage the ./configs/<client>.json file.
-            // The original files become read-only sources unless explicitly synced.
+        if (syncGroupId && settings.syncGroups[syncGroupId]) {
+            // --- Saving for a Sync Group ---
+            savePath = settings.syncGroups[syncGroupId].configPath;
+            affectedClientIds = settings.syncGroups[syncGroupId].members;
+            console.log(`Saving to sync group config: ${savePath}`);
+        } else if (clientId && client) {
+            // --- Saving for a Single, Unsynced Client ---
+            savePath = getClientSpecificConfigPath(clientId);
+            affectedClientIds = [clientId];
+            console.log(`Saving to client-specific config: ${savePath}`);
         } else {
-            // Sync ON: Save to main config file
-            targetPath = CONFIG_PATH;
-            targetDescription = `main config (${targetPath})`;
+            // --- Saving from Server Configuration View (Sync OFF) ---
+            // This requires updating potentially multiple client-specific files.
+            // Or potentially creating new sync groups if conflicts were resolved?
+            // For now, let's disallow direct saving from Server View if sync is off.
+            // User should select a client first.
+            // TODO: Revisit saving from aggregated view.
+             return res.status(400).json({ error: 'Cannot save directly from Server Configuration view when sync is off. Select a client.' });
         }
 
-        // 4. Create backup and save the active configuration file
-        if (targetPath) {
-            await createBackup(targetPath); // Backup before overwriting
-            await fs.writeFile(targetPath, JSON.stringify(activeConfigToSave, null, 2));
-            console.log(`Configuration saved successfully to ${targetDescription}`);
+        // Write the config file
+        await fs.writeFile(savePath, JSON.stringify(configData, null, 2));
+        console.log(`Configuration saved to ${savePath}`);
 
-             // If sync is ON, also update all *enabled* original client config files
-             if (settings.syncClients) {
-                 console.log("Sync is ON: Propagating changes to enabled client original configs...");
-                 const enabledClientPaths = getEnabledClientConfigPaths(); // Gets original paths
-                 for (const clientPath of enabledClientPaths) {
-                     // Ensure clientPath is valid and not the same as the main config path we just wrote
-                     if (clientPath && clientPath !== CONFIG_PATH) { 
-                         try {
-                             await createBackup(clientPath); // Backup client file
-                             await fs.writeFile(clientPath, JSON.stringify(activeConfigToSave, null, 2));
-                             console.log(`Synced configuration to original client path: ${clientPath}`);
-                         } catch (syncError) {
-                             console.error(`Failed to sync configuration to ${clientPath}:`, syncError);
-                             // Log error but continue trying others
-                         }
-                     }
-                 }
-             }
+        // Optionally: Update original client files if needed? No, managed files handle this.
 
-             // Update the initial state for future comparisons after successful save
-             // Store only the mcpServers part
-             initialActiveConfig = { mcpServers: _.cloneDeep(activeConfigToSave.mcpServers || {}) }; 
-             console.log("Updated initial active config after save:", JSON.stringify(initialActiveConfig.mcpServers || {}, null, 2));
-
-             res.send('Configuration saved successfully.');
-
-        } else {
-             console.error("Could not determine target path for saving configuration.");
-             res.status(500).send("Internal error: Could not determine save location.");
-        }
+        res.json({ success: true, message: `Configuration saved successfully for ${affectedClientIds.join(', ')}` });
 
     } catch (error) {
-        console.error('Failed to save configuration:', error);
-        res.status(500).send(`Failed to save configuration: ${error.message}`);
+        console.error(`Error saving configuration for ${clientId || syncGroupId || 'servers view'}:`, error);
+        res.status(500).json({ error: 'Failed to save configuration', details: error.message });
     }
 });
 
@@ -716,7 +734,7 @@ router.post('/presets', async (req, res) => {
 // Endpoint to check for configuration differences (relevant primarily for sync mode)
 router.get('/check-configs', async (req, res) => {
     console.log('GET /api/check-configs');
-     if (!settings.syncClients) {
+     if (!settings.syncGroups) {
          console.log("Sync OFF: Skipping config difference check.");
          // In non-sync mode, differences between original files don't matter for warnings.
          // The relevant check (editor vs. saved) happens client-side.
@@ -822,7 +840,7 @@ router.get('/test', (req, res) => {
 /*
 async function checkConfigsFirstTime() {
     console.log('Performing initial configuration check...');
-    if (!settings.syncClients) {
+    if (!settings.syncGroups) {
         console.log('Sync is disabled, skipping initial cross-client config check.');
         // When sync is off, we load the specific client's config.
         // We don't need to compare originals at startup.
@@ -983,7 +1001,7 @@ router.get('/api/presets', (req, res) => {
 // API endpoint to check for differences between original client config files
 router.get('/api/check-configs', async (req, res) => {
     console.log('GET /api/check-configs - Checking original client file differences');
-    if (!settings.syncClients) {
+    if (!settings.syncGroups) {
         return res.json({ configsDiffer: false, differences: [] });
     }
 
@@ -1023,5 +1041,185 @@ router.get('/api/check-configs', async (req, res) => {
     } catch (error) {
         console.error('Error comparing original client config files:', error);
         res.status(500).json({ error: 'Failed to compare client configurations' });
+    }
+});
+
+// --- Custom Client CRUD & Sync Group API --- 
+
+// Add/Update Client
+router.post('/api/clients', async (req, res) => {
+    const { clientId, name, configPath, enabled } = req.body;
+    const isUpdate = !!clientId;
+    const idToSave = clientId || `custom_${Date.now()}`;
+
+    if (!name || !configPath) {
+        return res.status(400).json({ error: 'Client name and config path are required' });
+    }
+
+    console.log(`${isUpdate ? 'Updating' : 'Adding'} client: ${idToSave}`);
+
+    settings.clients[idToSave] = {
+        name,
+        configPath,
+        enabled: enabled !== undefined ? enabled : true,
+        builtIn: false,
+        syncGroup: settings.clients[idToSave]?.syncGroup || null // Preserve sync group if updating
+    };
+
+    try {
+        await fs.writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2));
+        res.json({ success: true, clientId: idToSave, client: settings.clients[idToSave] });
+    } catch (error) {
+        console.error('Error saving client settings:', error);
+        res.status(500).json({ error: 'Failed to save client settings' });
+    }
+});
+
+// Delete Client
+router.delete('/api/clients/:clientId', async (req, res) => {
+    const { clientId } = req.params;
+
+    if (!settings.clients[clientId]) {
+        return res.status(404).json({ error: 'Client not found' });
+    }
+    if (settings.clients[clientId].builtIn) {
+        return res.status(400).json({ error: 'Cannot delete built-in clients' });
+    }
+    
+    // TODO: Handle removing client from sync groups
+    const syncGroupId = settings.clients[clientId].syncGroup;
+    if (syncGroupId && settings.syncGroups[syncGroupId]) {
+        _.pull(settings.syncGroups[syncGroupId].members, clientId);
+        // If group becomes empty or single, delete the group?
+        if (settings.syncGroups[syncGroupId].members.length <= 1) {
+             console.log(`Deleting sync group ${syncGroupId} as it has <= 1 member after deleting ${clientId}`);
+             // Also need to reset syncGroup for remaining member
+             if(settings.syncGroups[syncGroupId].members.length === 1) {
+                 const remainingClientId = settings.syncGroups[syncGroupId].members[0];
+                 if (settings.clients[remainingClientId]) {
+                     settings.clients[remainingClientId].syncGroup = null;
+                 }
+             }
+             // Delete group config file?
+             try { await fs.unlink(settings.syncGroups[syncGroupId].configPath); } catch (e) { console.error('Failed to delete group config', e);}
+             delete settings.syncGroups[syncGroupId];
+        }
+    }
+
+    console.log(`Deleting client: ${clientId}`);
+    delete settings.clients[clientId];
+
+    try {
+        await fs.writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2));
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Error saving settings after deleting client:', error);
+        res.status(500).json({ error: 'Failed to save settings after deletion' });
+    }
+});
+
+// Create/Update Sync Group
+router.post('/api/sync-groups', async (req, res) => {
+    const { clientIds } = req.body; // Expecting an array of client IDs to sync
+
+    if (!clientIds || clientIds.length < 2) {
+        return res.status(400).json({ error: 'At least two client IDs are required to form a sync group' });
+    }
+
+    // Basic validation: Check if clients exist
+    for (const id of clientIds) {
+        if (!settings.clients[id]) {
+            return res.status(400).json({ error: `Client with ID ${id} not found` });
+        }
+    }
+    
+    // Determine if this merges existing groups or creates a new one
+    // For simplicity now, let's assume it creates a new group or overwrites existing client assignments.
+    // A more robust implementation would handle merging groups.
+    
+    const newGroupId = `group_${Date.now()}`;
+    const newGroupConfigPath = path.join(SYNC_CONFIGS_DIR, `${newGroupId}.json`);
+    
+    console.log(`Creating/Updating sync group ${newGroupId} with members: ${clientIds.join(', ')}`);
+
+    // 1. Create the group entry
+    settings.syncGroups[newGroupId] = {
+        members: clientIds,
+        configPath: newGroupConfigPath
+    };
+    
+    // 2. Update client entries to point to this group
+    // Also handle clients previously in other groups
+    const clientIdsToUpdate = new Set(clientIds);
+    const groupsToDelete = new Set(); // Track old groups to potentially delete
+    const clientsToRemoveFromOldGroups = {}; // { oldGroupId: [clientId1, clientId2] }
+
+    // First pass: Assign new group and identify clients leaving old groups
+    for (const id of Object.keys(settings.clients)) {
+        const client = settings.clients[id];
+        const oldGroupId = client.syncGroup;
+
+        if (clientIdsToUpdate.has(id)) {
+            // Assign to new group
+            client.syncGroup = newGroupId;
+            // If it was in an old group different from the new one, mark for removal
+            if (oldGroupId && oldGroupId !== newGroupId && settings.syncGroups[oldGroupId]) {
+                 if (!clientsToRemoveFromOldGroups[oldGroupId]) {
+                     clientsToRemoveFromOldGroups[oldGroupId] = [];
+                 }
+                 clientsToRemoveFromOldGroups[oldGroupId].push(id);
+                 groupsToDelete.add(oldGroupId); // Mark old group for potential deletion check
+            }
+        } 
+    }
+    
+    // Second pass: Process old groups removal and deletion checks asynchronously
+    for (const oldGroupId of groupsToDelete) {
+        if (settings.syncGroups[oldGroupId]) {
+            const clientsToRemove = clientsToRemoveFromOldGroups[oldGroupId] || [];
+            // Remove clients from the old group's member list
+            _.pull(settings.syncGroups[oldGroupId].members, ...clientsToRemove);
+
+            // Check if old group needs deletion
+            if (settings.syncGroups[oldGroupId].members.length <= 1) {
+                console.log(`Marking sync group ${oldGroupId} for deletion (<= 1 member).`);
+                const remainingMemberId = settings.syncGroups[oldGroupId].members[0]; // Could be undefined if 0 members
+                 // Reset syncGroup for the remaining member (if any)
+                 if (remainingMemberId && settings.clients[remainingMemberId]) {
+                     settings.clients[remainingMemberId].syncGroup = null;
+                 }
+                 // Delete group config file asynchronously
+                 try {
+                     await fs.unlink(settings.syncGroups[oldGroupId].configPath);
+                     console.log(`Deleted old group config: ${settings.syncGroups[oldGroupId].configPath}`);
+                 } catch (e) {
+                     if (e.code !== 'ENOENT') { // Ignore if file already gone
+                         console.error('Failed to delete old group config', e);
+                     }
+                 }
+                 // Delete the group entry from settings
+                 delete settings.syncGroups[oldGroupId];
+            }
+        }
+    }
+
+    // 3. Create the initial config file for the group (e.g., copy from first client? or merge?)
+    // Let's copy from the first client in the list for now
+    try {
+        const firstClientConfig = await readManagedConfigFile(clientIds[0]);
+        await fs.writeFile(newGroupConfigPath, JSON.stringify(firstClientConfig || { mcpServers: {} }, null, 2));
+        console.log(`Created initial sync config at ${newGroupConfigPath} based on ${clientIds[0]}`);
+    } catch (copyError) {
+        console.error(`Failed to create initial sync config for group ${newGroupId}:`, copyError);
+        // Proceed even if initial config copy fails, but log error
+    }
+
+    // 4. Save updated settings
+    try {
+        await fs.writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2));
+        res.json({ success: true, groupId: newGroupId, group: settings.syncGroups[newGroupId] });
+    } catch (error) {
+        console.error('Error saving settings after creating sync group:', error);
+        res.status(500).json({ error: 'Failed to save settings after creating sync group' });
     }
 });

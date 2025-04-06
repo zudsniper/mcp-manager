@@ -5,7 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MCP Server Manager</title>
     <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.34.1/min/vs/loader.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
 </head>
 <body>
     <div class="container">
@@ -87,13 +90,11 @@
                     -->
                 </div>
                 <div class="sync-controls">
-                    <label>
-                        <input type="checkbox" id="syncClientsToggle">
-                        Sync Clients
-                    </label>
+                    <!-- Removed Sync Clients Checkbox -->
+                    <span class="sync-help-text">SHIFT+Click another client to create/join a sync group.</span>
                 </div>
-                <!-- Add Client button might be removed if settings are managed elsewhere -->
-                <!-- <button class="add-client-button" onclick="showAddClientModal()">+ Add Custom Client</button> -->
+                <!-- Add Client button -->
+                <button class="add-client-button" onclick="openClientModal('new')" title="Add Custom Client">+</button>
             </div>
         </div>
     </div>
@@ -124,22 +125,36 @@
         </div>
     </div>
 
-    <!-- Add Client Modal -->
-    <div id="addClientModal" class="modal">
+    <!-- Add/Edit Client Modal -->
+    <div id="clientModal" class="modal">
         <div class="modal-content">
-            <span class="close-button" onclick="closeModal('addClientModal')">&times;</span>
-            <h2>Add Custom MCP Client</h2>
+            <span class="close-button" onclick="closeModal('clientModal')">&times;</span>
+            <h2 id="clientModalTitle">Add Custom MCP Client</h2>
+            <input type="hidden" id="clientModalId"> <!-- To store ID when editing -->
             <div class="form-group">
-                <label for="clientName">Client Name:</label>
-                <input type="text" id="clientName" placeholder="Custom Client Name">
+                <label for="clientModalName">Client Name:</label>
+                <input type="text" id="clientModalName" placeholder="My Custom Client">
             </div>
             <div class="form-group">
-                <label for="clientConfigPath">Config File Path:</label>
-                <input type="text" id="clientConfigPath" placeholder="/path/to/config.json">
+                <label for="clientModalConfigPath">Config File Path:</label>
+                <input type="text" id="clientModalConfigPath" placeholder="/path/to/custom_config.json">
             </div>
             <div class="modal-buttons">
-                <button onclick="addCustomClient()">Add Client</button>
-                <button onclick="closeModal('addClientModal')">Cancel</button>
+                <button id="deleteClientButton" class="delete-button" onclick="deleteClient()" style="display: none; margin-right: auto;">Delete</button>
+                <button onclick="saveClient()">Save Client</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sync Confirmation Modal -->
+    <div id="syncConfirmModal" class="modal">
+        <div class="modal-content">
+            <span class="close-button" onclick="closeModal('syncConfirmModal')">&times;</span>
+            <h2>Confirm Client Sync</h2>
+            <p id="syncConfirmMessage"></p>
+            <div class="modal-buttons">
+                 <button onclick="closeModal('syncConfirmModal')">Cancel</button>
+                 <button onclick="confirmSync()" class="save-button">Confirm Sync</button>
             </div>
         </div>
     </div>
@@ -263,8 +278,6 @@
     </footer>
 
     <!-- Add Monaco Editor from CDN -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.36.1/min/vs/loader.min.js"></script>
     <script>
         // Monaco Editor loader configuration
         require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.36.1/min/vs' }});
@@ -275,3 +288,5 @@
     <script src="app.js"></script>
 </body>
 </html>
+
+

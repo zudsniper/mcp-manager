@@ -450,6 +450,17 @@ input:checked + .slider:before {
     background-color: #d32f2f; /* Darker red on hover */
 }
 
+/* Style for Delete button in modals */
+.modal-buttons .delete-button {
+    background-color: var(--error-color);
+    color: white;
+    margin-right: auto; /* Push to the left */
+}
+
+.modal-buttons .delete-button:hover {
+    background-color: #d32f2f;
+}
+
 /* Preset Controls Styles */
 .preset-controls {
     background-color: var(--card-bg);
@@ -1257,6 +1268,14 @@ body.shift-pressed .env-var-pair[data-sensitive="true"] .env-value,
     flex-shrink: 0; /* Prevent squishing */
 }
 
+/* Style for server source annotation */
+.server-source {
+    font-size: 0.8em;
+    color: #777;
+    font-style: italic;
+    margin-left: 5px; /* Space from name */
+}
+
 /* Footer Styles */
 .app-footer {
     text-align: center;
@@ -1274,4 +1293,108 @@ body.shift-pressed .env-var-pair[data-sensitive="true"] .env-value,
 
 .app-footer a:hover {
     text-decoration: underline;
+}
+
+/* Style for custom client names */
+.client-item.custom .client-name {
+    font-style: italic;
+}
+
+/* Style for client items in a sync group */
+.client-item.sync-group {
+    border-left-color: #ff9800; /* Example: Orange border */
+    background-color: #fff3e0; /* Lighter orange background */
+}
+
+.client-item.sync-group.active {
+     border-color: #ff9800; /* Keep orange border when active */
+     background-color: #ffe0b2; /* Darker orange when active */
+}
+
+.sync-help-text {
+    font-size: 0.8em;
+    color: #666;
+    display: block;
+    text-align: center;
+}
+
+/* Icon buttons for Edit/Delete */
+.icon-button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 5px;
+    margin: 0 3px;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+}
+
+.icon-button:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+}
+
+.edit-button {
+    color: var(--accent-color);
+}
+
+.delete-button {
+    color: var(--error-color);
+}
+
+/* Style for the environment variables on hover */
+.env-var-pair {
+    position: relative;
+    display: flex;
+    align-items: center;
+    margin-bottom: 5px;
+    cursor: pointer;
+}
+
+.env-value {
+    display: inline-block;
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: all 0.2s ease;
+}
+
+.env-var-pair:hover .env-value {
+    position: absolute;
+    z-index: 10;
+    background-color: white;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+    padding: 3px 6px;
+    border-radius: 3px;
+    max-width: none;
+    white-space: normal;
+    word-break: break-all;
+}
+
+.warning-text {
+    color: var(--error-color);
+    font-weight: bold;
+}
+
+/* Simple + button for Add Custom Clients */
+.add-client-button {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background-color: var(--accent-color);
+    color: white;
+    font-size: 24px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    margin: 10px auto;
+    cursor: pointer;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
 }
