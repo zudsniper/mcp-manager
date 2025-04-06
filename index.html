@@ -26,8 +26,14 @@
             <!-- Left Content Area -->
             <div class="main-content">
                 <!-- Configuration Mode Indicator -->
-                <div id="configModeIndicator" class="config-mode-indicator">
-                    <div class="mode-title">Configuration Mode: <span id="currentConfigMode">Loading...</span></div>
+                <div id="configModeIndicator" class="config-mode-indicator" style="display: none;">
+                    <div id="backToServerEditor" class="back-to-editor-btn" style="display: none;" onclick="returnToServerEditor()">
+                        ← Back to Server Editor
+                    </div>
+                    <div class="mode-header">
+                        <div class="mode-badge" id="modeBadge">Global</div>
+                        <div class="mode-title">Configuration Mode: <span id="currentConfigMode">Loading...</span></div>
+                    </div>
                     <div class="mode-description" id="configModeDescription">Select a client from the sidebar to edit its configuration.</div>
                 </div>
                 
@@ -47,6 +53,10 @@
                     <button class="tab active" onclick="showView('servers', this)">Servers</button>
                     <button class="tab" onclick="showView('tools', this)">Tools</button>
                     <button class="tab" onclick="showView('backups', this)">Backups</button>
+                    <!-- Add Server button at the top (only visible in Servers view) -->
+                    <button id="topAddServerButton" class="add-server-top-button" onclick="openServerConfig('new')">
+                        <span class="add-icon">+</span>
+                    </button>
                 </div>
 
                 <!-- Views -->
@@ -60,6 +70,12 @@
             <!-- Right Sidebar - Client Selection -->
             <div class="client-sidebar">
                 <h3>MCP Clients</h3>
+                <!-- Add Servers option to the sidebar -->
+                <div id="serversOption" class="servers-option active" onclick="selectServersMode()">
+                    <span class="servers-icon">⚙️</span>
+                    <span class="servers-label">Server Configuration</span>
+                </div>
+                <div class="sidebar-divider"></div>
                 <div id="clientList" class="client-list">
                     <!-- Client items will be rendered here by app.js -->
                     <!-- Example of static items (if needed, but handled by JS now) -->
@@ -135,69 +151,84 @@
         <div class="modal-content config-editor">
             <span class="close-button" onclick="closeModal('serverConfigModal')">&times;</span>
             <h2>Edit Server Configuration</h2>
-            <form id="serverConfigForm">
-                <div class="form-group">
-                    <label for="serverName">Server Name:</label>
-                    <input type="text" id="serverName" readonly>
-                </div>
-                
-                <div class="form-group">
-                    <label for="serverCommand">Command:</label>
-                    <input type="text" id="serverCommand" placeholder="node, python, etc.">
-                </div>
-                
-                <div class="form-group">
-                    <label>Arguments:</label>
-                    <div id="serverArgs" class="args-container">
-                        <!-- Dynamic args will be added here -->
+            <div class="editor-tabs">
+                <button id="formEditorTab" class="editor-tab active" onclick="switchEditorTab('form')">Form Editor</button>
+                <button id="jsonEditorTab" class="editor-tab" onclick="switchEditorTab('json')">JSON Editor</button>
+            </div>
+            
+            <div id="formEditorPanel">
+                <form id="serverConfigForm">
+                    <div class="form-group">
+                        <label for="serverName">Server Name:</label>
+                        <input type="text" id="serverName" readonly>
                     </div>
-                    <button type="button" class="add-arg-button" onclick="addServerArg()">+ Add Argument</button>
-                </div>
-                
-                <div class="form-group">
-                    <label>Environment Variables:</label>
-                    <div id="serverEnv" class="env-container">
-                        <!-- Dynamic env vars will be added here -->
+                    
+                    <div class="form-group">
+                        <label for="serverCommand">Command:</label>
+                        <input type="text" id="serverCommand" placeholder="node, python, etc.">
                     </div>
-                    <button type="button" class="add-env-button" onclick="addServerEnv()">+ Add Environment Variable</button>
-                </div>
+                    
+                    <div class="form-group">
+                        <label>Arguments:</label>
+                        <div id="serverArgs" class="args-container">
+                            <!-- Dynamic args will be added here -->
+                        </div>
+                        <button type="button" class="add-arg-button" onclick="addServerArg()">+ Add Argument</button>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Environment Variables:</label>
+                        <div id="serverEnv" class="env-container">
+                            <!-- Dynamic env vars will be added here -->
+                        </div>
+                        <button type="button" class="add-env-button" onclick="addServerEnv()">+ Add Environment Variable</button>
+                    </div>
 
-                <div class="form-group">
-                    <label for="serverType">Connection Type:</label>
-                    <select id="serverType">
-                        <option value="subprocess">Subprocess (Command-based)</option>
-                        <option value="sse">Server-Sent Events (URL-based)</option>
-                    </select>
-                </div>
-                
-                <div id="sseUrlContainer" class="form-group" style="display: none;">
-                    <label for="sseUrl">SSE URL:</label>
-                    <input type="text" id="sseUrl" placeholder="https://your-sse-server.com/events">
-                </div>
+                    <div class="form-group">
+                        <label for="serverType">Connection Type:</label>
+                        <select id="serverType">
+                            <option value="subprocess">Subprocess (Command-based)</option>
+                            <option value="sse">Server-Sent Events (URL-based)</option>
+                        </select>
+                    </div>
+                    
+                    <div id="sseUrlContainer" class="form-group" style="display: none;">
+                        <label for="sseUrl">SSE URL:</label>
+                        <input type="text" id="sseUrl" placeholder="https://your-sse-server.com/events">
+                    </div>
 
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" id="enableInspector">
-                        Enable MCP Inspector
-                    </label>
-                    <div class="help-text">
-                        MCP Inspector adds a layer to intercept and debug MCP messages
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="enableInspector">
+                            Enable MCP Inspector
+                        </label>
+                        <div class="help-text">
+                            MCP Inspector adds a layer to intercept and debug MCP messages
+                        </div>
                     </div>
-                </div>
-                
-                <div id="inspectorOptionsContainer" class="form-group subgroup" style="display: none;">
-                    <label for="inspectorPort">Inspector Port:</label>
-                    <input type="number" id="inspectorPort" value="7860" min="1024" max="65535">
-                    <div class="help-text">
-                        Port to run the MCP Inspector dashboard (default: 7860)
+                    
+                    <div id="inspectorOptionsContainer" class="form-group subgroup" style="display: none;">
+                        <label for="inspectorPort">Inspector Port:</label>
+                        <input type="number" id="inspectorPort" value="7860" min="1024" max="65535">
+                        <div class="help-text">
+                            Port to run the MCP Inspector dashboard (default: 7860)
+                        </div>
                     </div>
+                </form>
+            </div>
+            
+            <div id="jsonEditorPanel" style="display: none;">
+                <div id="monacoContainer" style="height: 400px; width: 100%; border: 1px solid #ccc;"></div>
+                <div class="path-resolution">
+                    <div class="path-info" id="pathInfo"></div>
+                    <button type="button" onclick="resolveExecutablePaths()" class="resolve-paths-btn">Resolve Executable Paths</button>
                 </div>
-                
-                <div class="modal-buttons">
-                    <button type="button" onclick="saveServerConfig()">Save Configuration</button>
-                    <button type="button" onclick="closeModal('serverConfigModal')">Cancel</button>
-                </div>
-            </form>
+            </div>
+            
+            <div class="modal-buttons">
+                <button type="button" onclick="saveServerConfig()">Save Configuration</button>
+                <button type="button" onclick="closeModal('serverConfigModal')">Cancel</button>
+            </div>
         </div>
     </div>
 
@@ -223,8 +254,16 @@
         <div id="loadingMessage">Loading...</div>
     </div>
 
-    <!-- Add Lodash from CDN -->
+    <!-- Add Monaco Editor from CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.36.1/min/vs/loader.min.js"></script>
+    <script>
+        // Monaco Editor loader configuration
+        require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.36.1/min/vs' }});
+        require(['vs/editor/editor.main'], function() {
+            // Monaco is loaded and ready
+        });
+    </script>
     <script src="app.js"></script>
 </body>
 </html>

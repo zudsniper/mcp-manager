@@ -58,6 +58,8 @@ h1 {
     display: flex;
     gap: 1rem;
     margin-bottom: 2rem;
+    align-items: center;
+    position: relative;
 }
 
 .tab {
@@ -77,6 +79,34 @@ h1 {
 .tab.active {
     background-color: var(--primary-color);
     color: white;
+}
+
+/* Add server button at the top */
+.add-server-top-button {
+    margin-left: auto;
+    background-color: var(--primary-color);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition: all 0.2s ease;
+}
+
+.add-server-top-button:hover {
+    background-color: var(--primary-hover);
+    transform: scale(1.05);
+}
+
+.add-server-top-button .add-icon {
+    font-size: 20px;
+    line-height: 1;
+    font-weight: bold;
 }
 
 /* Server Grid */
@@ -322,34 +352,40 @@ input:checked + .slider:before {
     width: 100%; /* Full width */
     height: 100%; /* Full height */
     overflow: auto; /* Enable scroll if needed */
-    background-color: rgba(0,0,0,0.6); /* Black w/ opacity */
+    background-color: rgba(0, 0, 0, 0.6); /* Black w/ opacity */
 }
 
 .modal-content {
-    background-color: var(--background-color);
-    margin: 15% auto; /* 15% from the top and centered */
+    background-color: #fff; /* Ensure there's a background */
+    margin: 10vh auto; /* 10% from the top and centered */
     padding: 25px;
-    border: 1px solid var(--border-color);
+    border: 1px solid #e0e0e0;
     border-radius: 8px;
     width: 80%; /* Could be more or less, depending on screen size */
-    max-width: 500px; /* Maximum width */
-    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-    color: var(--text-primary);
+    max-width: 700px; /* Maximum width */
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    color: #333; /* Ensure text is readable */
+    position: relative;
+    max-height: 80vh;
+    overflow-y: auto;
 }
 
+/* Improve close button visibility */
 .close-button {
-    color: var(--text-secondary);
+    color: #999;
     float: right;
     font-size: 28px;
     font-weight: bold;
     line-height: 1;
+    position: absolute;
+    top: 15px;
+    right: 20px;
+    cursor: pointer;
+    transition: color 0.2s;
 }
 
-.close-button:hover,
-.close-button:focus {
-    color: var(--accent-color);
-    text-decoration: none;
-    cursor: pointer;
+.close-button:hover {
+    color: #333;
 }
 
 .modal h2 {
@@ -945,28 +981,167 @@ body.shift-pressed .env-var-pair[data-sensitive="true"] .env-value,
 /* Config Mode Indicator */
 .config-mode-indicator {
     background-color: #f8f9fa;
-    border: 1px solid #dee2e6;
-    border-radius: 4px;
+    border-radius: 8px;
     padding: 1rem;
     margin-bottom: 1.5rem;
-    text-align: center;
-    display: block;
-    width: 100%;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    position: relative;
 }
 
-.mode-title {
-    font-weight: bold;
-    margin-bottom: 0.5rem;
-    color: #343a40;
+.mode-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
 }
 
-#currentConfigMode {
-    color: var(--primary-color);
-    font-weight: 600;
-}
-
-.mode-description {
+.mode-badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border-radius: 20px;
+    font-weight: 500;
     font-size: 0.9rem;
-    color: #6c757d;
+    text-align: center;
+}
+
+.mode-badge.global {
+    background-color: #e3f2fd;
+    color: #1976d2;
+}
+
+.mode-badge.client {
+    background-color: #f0f4c3;
+    color: #827717;
+}
+
+.back-to-editor-btn {
+    display: inline-block;
+    margin-bottom: 0.5rem;
+    padding: 0.25rem 0.5rem;
+    color: #2196f3;
+    cursor: pointer;
+    border-radius: 4px;
+    font-weight: 500;
+    transition: background-color 0.2s;
+}
+
+.back-to-editor-btn:hover {
+    background-color: #e3f2fd;
+    text-decoration: underline;
+}
+
+/* Editor Tabs Styles */
+.editor-tabs {
+    display: flex;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid #ddd;
+}
+
+.editor-tab {
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: #666;
+}
+
+.editor-tab.active {
+    border-bottom: 2px solid #2196f3;
+    color: #2196f3;
+    font-weight: 500;
+}
+
+.editor-tab:hover:not(.active) {
+    background-color: #f0f0f0;
+}
+
+/* Path Resolution Section */
+.path-resolution {
+    margin-top: 1rem;
+    padding: 0.5rem;
+    background-color: #f8f9fa;
+    border-radius: 4px;
+}
+
+.path-info {
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+}
+
+.path-info .path-warning {
+    color: #f57c00;
+}
+
+.path-info .path-resolved {
+    color: #43a047;
+}
+
+.resolve-paths-btn {
+    padding: 0.25rem 0.75rem;
+    background-color: #f0f4c3;
+    color: #827717;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+}
+
+.resolve-paths-btn:hover {
+    background-color: #e6ee9c;
+}
+
+/* Servers option in sidebar */
+.servers-option {
+    display: flex;
+    align-items: center;
+    padding: 0.8rem 1rem;
+    margin-bottom: 0.5rem;
+    background-color: #f0f4f8;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: background-color 0.2s, box-shadow 0.2s;
+    border-left: 4px solid transparent;
+}
+
+.servers-option.active {
+    background-color: #e3f2fd;
+    border-left: 4px solid #2196f3;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.servers-option:hover:not(.active) {
+    background-color: #e8eef3;
+}
+
+.servers-icon {
+    margin-right: 0.75rem;
+    font-size: 1.2rem;
+}
+
+.servers-label {
+    font-size: 1rem;
+    color: #37474f;
+}
+
+.sidebar-divider {
+    height: 1px;
+    background-color: #e0e0e0;
+    margin: 0.5rem 0 1rem 0;
+}
+
+/* Adjust client list to work with servers option */
+.client-list {
+    margin-top: 0.5rem;
+}
+
+.client-item {
+    border-left: 4px solid transparent;
+}
+
+.client-item.active {
+    background-color: #f0f4c3;
+    border-left: 4px solid #827717;
 }

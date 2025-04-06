@@ -20,6 +20,7 @@ let selectedClientId = null; // Track the currently selected client ID in non-sy
 // let currentConfigFilePath = ''; // Likely redundant now, path determined by selectedClientId/syncMode
 let hasUnsavedChanges = false; // Track unsaved changes in the current editor session
 let lastLoadedClientId = null; // Remember the last client loaded when sync is off
+let isServersMode = true; // Default to server configuration mode
 
 // API endpoints
 const API = {
@@ -150,6 +151,7 @@ async function loadConfigForClient(clientId) {
             renderServers();
             hideConfigWarning(); // No cross-client warnings in non-sync mode
             configChanged(); // Check if editor matches loaded config (should be false initially)
+            updateConfigModeIndicator(); // Update mode indicator
         } else {
             throw new Error('Invalid config format received');
         }
@@ -160,6 +162,7 @@ async function loadConfigForClient(clientId) {
         originalConfig = {};
         renderServers();
         configChanged();
+        updateConfigModeIndicator(); // Update mode indicator
     } finally {
         showLoadingIndicator(false);
     }
@@ -179,6 +182,7 @@ async function loadMainConfig() {
             console.log('Loaded main config:', Object.keys(mcpServers));
             renderServers();
             configChanged(); // Check if editor matches loaded config
+            updateConfigModeIndicator(); // Update mode indicator
 
             // If sync is ON, check for differences between original client files
             if (clientSettings.syncClients) {
@@ -197,6 +201,7 @@ async function loadMainConfig() {
         renderServers();
         configChanged();
         hideConfigWarning();
+        updateConfigModeIndicator(); // Update mode indicator
     } finally {
         showLoadingIndicator(false);
     }
@@ -228,40 +233,28 @@ async function checkOriginalConfigDifferences() {
      }
 }
 
-function showView(view, clickedTab) {
-    console.log('Switching view to:', view);
-    // Update tabs
-    document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
-    if (clickedTab) { // Add check if clickedTab exists
-         clickedTab.classList.add('active');
-    } else {
-        // Fallback if called without a clickedTab (e.g. initial load)
-        const fallbackTab = document.querySelector(`.tab[onclick*="showView('${view}'"]`);
-        fallbackTab?.classList.add('active');
+// Function to render environment variables for server cards
+function renderEnvironmentVars(env) {
+    if (!env || Object.keys(env).length === 0) {
+        return '';
     }
 
-    // Update views
-    document.querySelectorAll('.view').forEach(v => v.style.display = 'none'); // Hide all views
-    const targetView = document.getElementById(view + 'View');
-    if (targetView) {
-        // Use appropriate display type (grid for servers, block for others)
-        targetView.style.display = (view === 'servers') ? 'grid' : 'block';
-    } else {
-        console.error('View not found:', view + 'View');
-    }
-
-    // Refresh content if needed
-    if (view === 'tools') {
-        renderTools();
-    }
-    if (view === 'backups') {
-        renderBackups(); // Fetch and render backups when tab is clicked
-    }
+    let html = '<div class="server-env-vars">';
+    Object.entries(env).forEach(([key, value]) => {
+        html += `<div class="env-var">${key}=${value}</div>`;
+    });
+    html += '</div>';
+    
+    return html;
 }
 
+// Function to render the servers view with proper button visibility logic
 function renderServers() {
     const serversView = document.getElementById('serversView');
     if (!serversView) return;
+    
+    // Only show add server elements in servers view when in serversMode
+    const showAddButtons = isServersMode;
     
     // Create HTML for server grid
     let serversHTML = '<div class="grid">';
@@ -291,283 +284,126 @@ function renderServers() {
     
     // Add a message if no servers
     if (serverNames.length === 0) {
-        serversHTML += '<div class="no-servers">No MCP servers configured. Click "Edit Server Configuration" to add a server.</div>';
+        serversHTML += '<div class="no-servers">No MCP servers configured. Click "Add Server" to add a server.</div>';
     }
     
     serversHTML += '</div>';
     
-    // Add an "Add Server" button
-    serversHTML += '<button class="add-server-button" onclick="openServerConfig(\'new\')">+ Add Server</button>';
+    // Add an "Add Server" button at the bottom, only if in serversMode
+    if (showAddButtons) {
+        serversHTML += '<button class="add-server-button" onclick="openServerConfig(\'new\')">+ Add Server</button>';
+    }
     
     // Update the view
     serversView.innerHTML = serversHTML;
+    
+    // Update top add button visibility
+    const topAddButton = document.getElementById('topAddServerButton');
+    if (topAddButton) {
+        topAddButton.style.display = showAddButtons ? 'flex' : 'none';
+    }
+    
+    // Add click handler to each server card
+    document.querySelectorAll('.server-card').forEach(card => {
+        card.addEventListener('click', function(e) {
+            // Don't trigger if clicking on a toggle switch or button
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON' || e.target.closest('.toggle-switch')) {
+                return;
+            }
+            // Open server config
+            const serverName = this.dataset.serverName;
+            openServerConfig(serverName);
+        });
+    });
     
     // Call configChanged to update floating buttons visibility
     configChanged();
 }
 
-// New function to render masked environment variables with interactions
-function renderEnvironmentVars(env) {
-    if (!env || Object.keys(env).length === 0) return '';
-
-    let html = '<div class="env-vars"><h4>Environment Variables</h4>';
-
-    Object.entries(env).forEach(([key, value]) => {
-        // Updated regex to catch KEY, TOKEN, SECRET, PASS, PASSWORD variations, including underscores
-        const isSensitive = /(\b|_)(KEY|TOKEN|SECRET|PASS|PASSWORD)(\b|_)/i.test(key);
-        const maskedValue = isSensitive ? '******' : value;
-        const valueId = `env-val-${key}-${Math.random().toString(36).substring(2, 9)}`; // Unique ID
-        const keyId = `env-key-${key}-${Math.random().toString(36).substring(2, 9)}`; // Unique ID for key span
-
-        html += `
-            <div class="env-var-pair" 
-                 data-sensitive="${isSensitive}" 
-                 data-key="${key}" 
-                 data-value="${value}">
-                <span class="env-key">${key}:</span>
-                <span class="env-value" 
-                      id="${valueId}" 
-                      title="${isSensitive ? 'Hold Shift to reveal / Click to copy' : value}"
-                      onclick="copyEnvVarToClipboard(this, '${value}', ${isSensitive})">
-                    ${maskedValue}
-                </span>
-                <span class="copy-feedback" id="feedback-${valueId}">Copied!</span>
-            </div>
-        `;
-    });
-
-    html += '</div>';
-    return html;
-}
-
-// Function to copy env var value to clipboard
-async function copyEnvVarToClipboard(element, value, isSensitive) {
-    if (isShiftPressed && isSensitive) { // Only copy if revealed
-        try {
-            await navigator.clipboard.writeText(value);
-            console.log('Copied to clipboard:', value);
-            // Show feedback
-            const feedbackId = `feedback-${element.id}`;
-            const feedbackElement = document.getElementById(feedbackId);
-            if (feedbackElement) {
-                feedbackElement.classList.add('visible');
-                setTimeout(() => feedbackElement.classList.remove('visible'), 1500);
-            }
-        } catch (err) {
-            console.error('Failed to copy: ', err);
-            showWarning('Failed to copy value to clipboard.');
-        }
-    } else if (!isSensitive) {
-         try {
-            await navigator.clipboard.writeText(value);
-            console.log('Copied to clipboard:', value);
-            const feedbackId = `feedback-${element.id}`;
-            const feedbackElement = document.getElementById(feedbackId);
-            if (feedbackElement) {
-                feedbackElement.classList.add('visible');
-                setTimeout(() => feedbackElement.classList.remove('visible'), 1500);
-            }
-        } catch (err) {
-             console.error('Failed to copy: ', err);
-             showWarning('Failed to copy value to clipboard.');
-        }
+// Function to show/hide the view
+function showView(view, clickedTab) {
+    console.log('Switching view to:', view);
+    
+    // Update tabs
+    document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+    if (clickedTab) {
+        clickedTab.classList.add('active');
     } else {
-        // Optionally show a message that Shift must be held for sensitive values
-        // console.log('Hold Shift while clicking to copy sensitive values.');
-         showWarning('Hold Shift while clicking to copy sensitive values.');
+        // Fallback if called without a clickedTab (e.g. initial load)
+        const fallbackTab = document.querySelector(`.tab[onclick*="showView('${view}'"]`);
+        fallbackTab?.classList.add('active');
     }
-}
-
-// Global state for Shift key
-let isShiftPressed = false;
-
-document.addEventListener('keydown', (event) => {
-    if (event.key === 'Shift' && !isShiftPressed) {
-        isShiftPressed = true;
-        document.body.classList.add('shift-pressed'); // Add class to body
-        // Reveal all sensitive values
-        document.querySelectorAll('.env-var-pair[data-sensitive="true"]').forEach(pair => {
-            const valueElement = pair.querySelector('.env-value');
-            if (valueElement) {
-                valueElement.textContent = pair.dataset.value;
-                 valueElement.title = pair.dataset.value; // Update title
-            }
-        });
-    }
-});
-
-document.addEventListener('keyup', (event) => {
-    if (event.key === 'Shift') {
-        isShiftPressed = false;
-        document.body.classList.remove('shift-pressed'); // Remove class from body
-        // Re-mask all sensitive values
-        document.querySelectorAll('.env-var-pair[data-sensitive="true"]').forEach(pair => {
-            const valueElement = pair.querySelector('.env-value');
-            if (valueElement) {
-                valueElement.textContent = '******';
-                valueElement.title = 'Hold Shift to reveal / Click to copy'; // Reset title
-            }
-        });
-    }
-});
-
-// Handle mouse hover for individual reveal (only when Shift is NOT pressed)
-document.addEventListener('mouseover', (event) => {
-    if (!isShiftPressed) {
-        const targetPair = event.target.closest('.env-var-pair[data-sensitive="true"]');
-        if (targetPair) {
-            const valueElement = targetPair.querySelector('.env-value');
-            if (valueElement) {
-                valueElement.textContent = targetPair.dataset.value;
-                 valueElement.title = targetPair.dataset.value; // Update title
-            }
-        }
-    }
-});
-
-document.addEventListener('mouseout', (event) => {
-    if (!isShiftPressed) {
-         const targetPair = event.target.closest('.env-var-pair[data-sensitive="true"]');
-         if (targetPair) {
-            const valueElement = targetPair.querySelector('.env-value');
-            if (valueElement) {
-                // Check if the mouse is *really* leaving the pair, not just moving between spans
-                 if (!targetPair.contains(event.relatedTarget)) {
-                     valueElement.textContent = '******';
-                     valueElement.title = 'Hold Shift to reveal / Click to copy'; // Reset title
-                 }
-            }
-        }
-    }
-});
-
-function renderTools() {
-    console.log('Rendering tools view');
-    const toolsView = document.getElementById('toolsView');
-    toolsView.innerHTML = '';
-
-    if (!toolsList || toolsList.length === 0) {
-        toolsView.innerHTML = '<div class="no-tools">No tools available or still loading...</div>';
-        return;
-    }
-
-    // Group tools by server
-    const toolsByServer = toolsList.reduce((acc, tool) => {
-        if (!acc[tool.server]) {
-            acc[tool.server] = [];
-        }
-        acc[tool.server].push(tool);
-        return acc;
-    }, {});
-
-    // Create server sections
-    Object.entries(toolsByServer).forEach(([server, tools]) => {
-        const serverSection = document.createElement('div');
-        serverSection.className = 'server-tools';
-        
-        const content = `
-            <h2>${server}</h2>
-            <div class="tools-grid">
-                ${tools.map(tool => `
-                    <div class="tool-card">
-                        <div class="tool-name">${tool.name}</div>
-                        <div class="tool-description">${tool.description || 'No description available'}</div>
-                        <div class="tool-schema">
-                            ${JSON.stringify(tool.inputSchema || {}, null, 2)}
-                        </div>
-                    </div>
-                `).join('')}
-            </div>
-        `;
-        
-        serverSection.innerHTML = content;
-        toolsView.appendChild(serverSection);
-    });
-}
-
-function toggleServer(name, enabled) {
-    console.log(`Toggling server ${name} to ${enabled ? 'enabled' : 'disabled'}`);
     
-    // Update the mcpServers object (for backwards compatibility with older code)
-    if (mcpServers[name]) {
-        mcpServers[name].enabled = enabled;
+    // Update views
+    document.querySelectorAll('.view').forEach(v => v.style.display = 'none'); // Hide all views
+    const targetView = document.getElementById(view + 'View');
+    if (targetView) {
+        // Use appropriate display type (grid for servers, block for others)
+        targetView.style.display = (view === 'servers') ? 'grid' : 'block';
     } else {
-        console.error(`Server ${name} not found in mcpServers object`);
+        console.error('View not found:', view + 'View');
     }
     
-    // Also update currentConfig to ensure all state objects are in sync
-    if (currentConfig.mcpServers && currentConfig.mcpServers[name]) {
-        currentConfig.mcpServers[name].enabled = enabled;
+    // Update top add server button visibility - only show in servers view AND in serversMode
+    const topAddButton = document.getElementById('topAddServerButton');
+    if (topAddButton) {
+        topAddButton.style.display = (view === 'servers' && isServersMode) ? 'flex' : 'none';
     }
     
-    // Update allServersConfig for completeness
-    if (allServersConfig.mcpServers && allServersConfig.mcpServers[name]) {
-        allServersConfig.mcpServers[name].enabled = enabled;
-    }
-    
-    // Check for changes and update UI state
-    checkForChanges();
-    
-    // Re-render the servers display to reflect the new state
-    displayMCPConfig();
-}
-
-async function renderBackups() {
-    console.log('Rendering backups view');
-    const backupsView = document.getElementById('backupsView');
-    backupsView.innerHTML = '<div class="loading-message">Loading backups...</div>'; // Show loading state
-
-    try {
-        const backups = await fetchWithTimeout(API.BACKUPS);
-        console.log('Received backups:', backups);
-
-        if (!backups || backups.length === 0) {
-            backupsView.innerHTML = '<div class="no-tools">No backups found.</div>'; // Re-use no-tools style
-            return;
-        }
-
-        const list = document.createElement('ul');
-        list.className = 'backup-list';
-
-        backups.forEach(backup => {
-            const item = document.createElement('li');
-            item.className = 'backup-item';
-            
-            // Format timestamp nicely
-            const timestamp = new Date(backup.timestamp).toLocaleString();
-            // Format size nicely
-            const sizeKB = (backup.size / 1024).toFixed(1);
-
-            item.innerHTML = `
-                <div>
-                    <span class="backup-filename">${backup.filename}</span>
-                    <span class="backup-timestamp">(${timestamp})</span>
-                </div>
-                <span class="backup-size">${sizeKB} KB</span>
-            `;
-            list.appendChild(item);
-            // Future: Add restore/delete buttons here
+    // Special case for servers view - update based on mode
+    if (view === 'servers' && isServersMode) {
+        // We're showing the server config in servers mode
+        document.getElementById('serversOption').classList.add('active');
+        document.querySelectorAll('.client-item').forEach(item => {
+            item.classList.remove('active');
         });
-
-        backupsView.innerHTML = ''; // Clear loading message
-        backupsView.appendChild(list);
-    } catch (error) {
-        console.error('Error fetching backups:', error);
-        backupsView.innerHTML = '<div class="message error">Failed to load backups.</div>';
+        
+        // Re-render servers to ensure correct button visibility
+        renderServers();
+    } else if (view === 'servers' && !isServersMode) {
+        // Re-render servers to hide add buttons in client mode
+        renderServers();
+    } else if (view !== 'servers') {
+        // For other views, we can leave the selection as is
+    }
+    
+    // Refresh content if needed
+    if (view === 'tools') {
+        renderTools();
+    }
+    if (view === 'backups') {
+        renderBackups();
     }
 }
 
+// Function to open a modal
 function openModal(modalId) {
     const modal = document.getElementById(modalId);
     if (modal) {
         modal.style.display = 'block';
+        
+        // Add click event listener to close modal when clicking outside
+        modal.addEventListener('click', function(event) {
+            // If the click is directly on the modal background (not on modal content)
+            if (event.target === modal) {
+                closeModal(modalId);
+            }
+        });
     }
 }
 
+// Function to close a modal
 function closeModal(modalId) {
     const modal = document.getElementById(modalId);
     if (modal) {
         modal.style.display = 'none';
+        
+        // Clean up event listener
+        modal.removeEventListener('click', function(event) {
+            if (event.target === modal) {
+                closeModal(modalId);
+            }
+        });
     }
 }
 
@@ -760,36 +596,72 @@ async function saveConfiguration() {
 
 // --- PRESET MANAGEMENT FUNCTIONS ---
 
-// Fetch and populate preset dropdown
+// Improved loadPresetsList with better error handling
 async function loadPresetsList() {
     console.log('Loading presets list...');
     try {
-        const presetNames = await fetchWithTimeout(API.PRESETS);
-        console.log('Available presets:', presetNames);
+        // Check if we're in development mode with mock data
+        if (window.location.hostname === 'localhost' && !window.FORCE_API) {
+            console.log('Using mock presets data in dev mode');
+            presets = {
+                'Default': { mcpServers: {} },
+                'Development': { mcpServers: {} }
+            };
+            updatePresetSelector();
+            return;
+        }
         
-        const presetSelector = document.getElementById('presetSelector');
-        presetSelector.innerHTML = ''; // Clear existing options
+        // Add a timestamp to prevent caching
+        const timestamp = new Date().getTime();
+        const response = await fetchWithTimeout(`${API.PRESETS}?_=${timestamp}`);
         
-        // Add a blank option first 
-        const blankOption = document.createElement('option');
-        blankOption.value = '';
-        blankOption.textContent = '-- Select Preset --';
-        presetSelector.appendChild(blankOption);
+        // Verify response type before parsing
+        const contentType = response.headers?.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            throw new Error(`Expected JSON response but got ${contentType || 'unknown content type'}`);
+        }
         
-        // Add each preset
-        presetNames.forEach(name => {
-            const option = document.createElement('option');
-            option.value = name;
-            option.textContent = name;
-            presetSelector.appendChild(option);
-        });
-        
-        return presetNames;
+        const data = await response.json();
+        if (data && typeof data === 'object') {
+            presets = data;
+            updatePresetSelector();
+        } else {
+            console.warn('Received invalid presets data:', data);
+            presets = {}; // Set empty object as fallback
+            updatePresetSelector();
+        }
     } catch (error) {
         console.error('Failed to load presets list:', error);
-        showMessage('Failed to load presets. Some features may be unavailable.');
-        return [];
+        // Continue with empty presets rather than blocking the app
+        presets = {};
+        updatePresetSelector();
+        
+        // Show warning to user but don't block the app flow
+        showWarning(`Error loading presets: ${error.message}`);
     }
+}
+
+// Add a helper function to update the preset selector
+function updatePresetSelector() {
+    const selector = document.getElementById('presetSelector');
+    if (!selector) return;
+    
+    // Clear existing options
+    selector.innerHTML = '';
+    
+    // Add empty option
+    const emptyOption = document.createElement('option');
+    emptyOption.value = '';
+    emptyOption.textContent = '-- Select a preset --';
+    selector.appendChild(emptyOption);
+    
+    // Add options for each preset
+    Object.keys(presets).forEach(name => {
+        const option = document.createElement('option');
+        option.value = name;
+        option.textContent = name;
+        selector.appendChild(option);
+    });
 }
 
 // Load a specific preset
@@ -1077,125 +949,97 @@ async function saveAppSettings() {
 }
 
 // Render the client sidebar based on current settings
-function renderClientSidebar() {
+function renderClientSidebar(activeClientId = null) {
+    console.log('Rendering client sidebar with active client:', activeClientId);
+    
     const clientList = document.getElementById('clientList');
     if (!clientList) return;
-    clientList.innerHTML = ''; // Clear existing list
-
-    if (!clientSettings || !clientSettings.clients) {
-        console.warn('No client settings found to render sidebar.');
-        return;
-    }
-
-    const syncEnabled = clientSettings.syncClients;
-
-    Object.entries(clientSettings.clients).forEach(([id, client]) => {
-        const listItem = document.createElement('div');
-        listItem.className = 'client-item';
-        listItem.dataset.clientId = id;
-
-        // Highlight if active
-        if (activeClients.includes(id)) {
-            listItem.classList.add('active');
+    
+    clientList.innerHTML = '';
+    
+    // Servers option is handled separately in HTML
+    
+    // Render each client
+    Object.entries(clientSettings.clients || {}).forEach(([clientId, client]) => {
+        const clientItem = document.createElement('div');
+        clientItem.className = 'client-item';
+        clientItem.dataset.clientId = clientId;
+        clientItem.dataset.builtIn = 'true'; // All clients are built-in for now
+        
+        // Add active class if this is the active client and we're not in servers mode
+        if (activeClientId === clientId && !isServersMode) {
+            clientItem.classList.add('active');
         }
-
-        // Client Name
+        
+        // Create client name span
         const nameSpan = document.createElement('span');
-        nameSpan.textContent = client.name || id;
-        listItem.appendChild(nameSpan);
-
-        // Add click listener for selection
-        listItem.addEventListener('click', () => selectClient(id, listItem));
-
-        // Add enabled/disabled status indicator (visual only for now)
-        const statusIndicator = document.createElement('span');
-        statusIndicator.className = `status-indicator ${client.enabled ? 'enabled' : 'disabled'}`;
-        statusIndicator.title = client.enabled ? 'Enabled' : 'Disabled';
-        listItem.appendChild(statusIndicator);
-
-        clientList.appendChild(listItem);
+        nameSpan.className = 'client-name';
+        nameSpan.textContent = client.name || clientId;
+        clientItem.appendChild(nameSpan);
+        
+        // Add click event
+        clientItem.addEventListener('click', function() {
+            selectClient(clientId, this);
+        });
+        
+        clientList.appendChild(clientItem);
     });
-
-    // Update sync toggle state
-    const syncToggle = document.getElementById('syncClientsToggle');
-    if (syncToggle) {
-        syncToggle.checked = syncEnabled;
-        // Disable toggle interaction if needed based on future logic
-    }
-    // Show/hide warning based on sync state
-    if (syncEnabled) {
-        checkOriginalConfigDifferences(); // Check for diffs when rendering in sync mode
-    } else {
-        hideConfigWarning();
+    
+    // Update the servers option active state
+    const serversOption = document.getElementById('serversOption');
+    if (serversOption) {
+        serversOption.classList.toggle('active', isServersMode);
     }
 }
 
 // Handle client selection in the sidebar
 async function selectClient(clientId, element) {
-    console.log(`Client selected: ${clientId}`);
-    const syncEnabled = clientSettings.syncClients;
-
-    // Update the configuration mode indicator
-    const modeSpan = document.getElementById('currentConfigMode');
-    const modeDescription = document.getElementById('configModeDescription');
+    console.log(`Selecting client: ${clientId}`);
+    isServersMode = false; // We're now in client mode
     
-    if (syncEnabled) {
-        // Sync ON: Multiple selection (toggle) - CURRENTLY NOT SUPPORTED BY SAVE/LOAD LOGIC
-        // For now, treat sync ON as meaning "use main config"
-        console.warn("Client selection ignored in Sync mode. Using main config.");
-        // Deselect all visually and load main config?
-        activeClients = [];
-        document.querySelectorAll('.client-item.active').forEach(el => el.classList.remove('active'));
-        
-        // Update mode indicator
-        if (modeSpan) modeSpan.textContent = "Global Sync Mode";
-        if (modeDescription) modeDescription.textContent = "Changes will be applied to all enabled clients.";
-        
-        await loadMainConfig();
-        // OR allow selection but don't load client-specific? Let's do the former.
-
+    // Deactivate servers option
+    document.getElementById('serversOption').classList.remove('active');
+    
+    // Update client items
+    document.querySelectorAll('.client-item').forEach(item => {
+        item.classList.remove('active');
+    });
+    
+    // Activate the clicked client
+    if (element) {
+        element.classList.add('active');
     } else {
-        // Sync OFF: Single selection
-        // Deselect previously active client (if any)
-        const previouslyActive = document.querySelector('.client-item.active');
-        if (previouslyActive && previouslyActive !== element) {
-            previouslyActive.classList.remove('active');
-        }
-
-        // Toggle selection for the clicked element
-        if (element.classList.contains('active')) {
-            // Deselecting the currently selected one - load nothing? Or main? Let's load main.
-            element.classList.remove('active');
-            activeClients = [];
-            
-            // Update mode indicator
-            if (modeSpan) modeSpan.textContent = "No Client Selected";
-            if (modeDescription) modeDescription.textContent = "Select a client from the sidebar to edit its configuration.";
-            
-            await loadMainConfig(); // Load main as a neutral state
-        } else {
-            // Selecting a new one
-            element.classList.add('active');
-            activeClients = [clientId]; // Only one active client
-            
-            // Update mode indicator
-            if (modeSpan) modeSpan.textContent = `${clientSettings.clients[clientId]?.name || clientId}`;
-            if (modeDescription) modeDescription.textContent = `Editing configuration for ${clientSettings.clients[clientId]?.name || clientId}.`;
-            
-            // Load the config for this specific client
-            await loadConfigForClient(clientId);
+        // Try to find and activate by ID if element not provided
+        const clientElement = document.querySelector(`.client-item[data-client-id="${clientId}"]`);
+        if (clientElement) {
+            clientElement.classList.add('active');
         }
     }
-    console.log('Active clients:', activeClients);
+    
+    selectedClientId = clientId;
+    
+    // Load the client-specific configuration
+    await loadConfigForClient(clientId);
+    
+    // Ensure we're showing the servers view
+    showView('servers');
 }
 
 // Simplified toggleClientSync - just updates setting and saves
 async function toggleClientSync() {
     const syncToggle = document.getElementById('syncClientsToggle');
-    const syncEnabled = syncToggle.checked;
-    console.log(`Toggling client sync to: ${syncEnabled}`);
-    clientSettings.syncClients = syncEnabled;
-    await saveAppSettings(); // Save settings will handle reloading config if necessary
+    clientSettings.syncClients = syncToggle.checked;
+    
+    await saveAppSettings();
+    
+    // When toggling sync ON/OFF, reload the configuration
+    if (isServersMode || !selectedClientId) {
+        await loadMainConfig(); // Always load main config in servers mode
+    } else {
+        await loadConfigForClient(selectedClientId);
+    }
+    
+    showToast(`Client sync mode ${clientSettings.syncClients ? 'enabled' : 'disabled'}`);
 }
 
 // --- SERVER CONFIGURATION EDITOR ---
@@ -1402,66 +1246,80 @@ function configChanged() {
 }
 
 async function initializeApp() {
-    console.log('Initializing MCP Manager App');
-    showLoadingIndicator(true, 'Initializing...');
-
-    // Load settings first
-    await loadAppSettings();
-
-    // Add event listener for sync toggle AFTER settings are loaded
-    const syncToggle = document.getElementById('syncClientsToggle');
-    if (syncToggle) {
-        // Remove existing listener first to prevent duplicates
-        syncToggle.removeEventListener('change', toggleClientSync);
-        syncToggle.addEventListener('change', toggleClientSync);
-    }
-
-    // Set initial configuration mode indicator
-    const modeSpan = document.getElementById('currentConfigMode');
-    const modeDescription = document.getElementById('configModeDescription');
+    console.log('Initializing app...');
     
-    if (settings?.syncClients) {
-        if (modeSpan) modeSpan.textContent = "Global Sync Mode";
-        if (modeDescription) modeDescription.textContent = "Changes will be applied to all enabled clients.";
-    } else {
-        // When starting in non-sync mode, we'll set this based on the selected client in loadInitialConfiguration
-        if (modeSpan) modeSpan.textContent = "Loading...";
-        if (modeDescription) modeDescription.textContent = "Select a client from the sidebar to edit its configuration.";
+    // Show loading indicator
+    showLoadingIndicator(true, 'Loading app configuration...');
+    
+    try {
+        // Initialize the top add server button visibility - hidden by default
+        const topAddButton = document.getElementById('topAddServerButton');
+        if (topAddButton) {
+            topAddButton.style.display = 'none';
+        }
+        
+        // Load application settings first
+        await loadAppSettings().catch(error => {
+            console.error('Error loading app settings:', error);
+            // Set some defaults if settings fail to load
+            clientSettings = { clients: {}, syncClients: false };
+        });
+        
+        // Render client sidebar
+        renderClientSidebar();
+        
+        // Attach sync toggle event listener
+        const syncToggle = document.getElementById('syncClientsToggle');
+        if (syncToggle) {
+            syncToggle.checked = clientSettings.syncClients || false;
+            syncToggle.addEventListener('change', toggleClientSync);
+        }
+        
+        // Try to load presets but continue if it fails
+        try {
+            await loadPresetsList();
+        } catch (error) {
+            console.error('Error loading presets:', error);
+            // Continue with app initialization
+        }
+        
+        // Load initial configuration based on mode
+        if (isServersMode) {
+            await loadMainConfig().catch(error => {
+                console.error('Error loading main config:', error);
+                mcpServers = {}; // Set empty as fallback
+                renderServers();
+            });
+        } else if (selectedClientId) {
+            await loadConfigForClient(selectedClientId).catch(error => {
+                console.error(`Error loading config for client ${selectedClientId}:`, error);
+                mcpServers = {}; // Set empty as fallback
+                renderServers();
+            });
+        } else {
+            // Default to servers mode if no client is selected
+            isServersMode = true;
+            await loadMainConfig().catch(error => {
+                console.error('Error loading main config:', error);
+                mcpServers = {}; // Set empty as fallback
+                renderServers();
+            });
+        }
+        
+        // Set up event listeners for save/reset buttons
+        document.getElementById('saveChangesBtn')?.addEventListener('click', saveChanges);
+        document.getElementById('resetChangesBtn')?.addEventListener('click', resetChanges);
+        
+        // Make sure we properly update visibility
+        showView('servers');
+        
+        console.log('App initialized successfully.');
+    } catch (error) {
+        console.error('Error initializing app:', error);
+        showWarning('Failed to initialize the application properly.');
+    } finally {
+        showLoadingIndicator(false);
     }
-
-    // Initial config load: Load main config by default.
-    // Client selection will trigger client-specific loads if sync is off.
-    await loadInitialConfiguration();
-
-    // Add event listeners (ensure they are added only once)
-    const saveBtn = document.getElementById('saveChangesBtn');
-    saveBtn?.removeEventListener('click', saveChanges); // Remove first
-    saveBtn?.addEventListener('click', saveChanges);
-
-    const resetBtn = document.getElementById('resetChangesBtn');
-    resetBtn?.removeEventListener('click', resetConfig); // Remove first
-    resetBtn?.addEventListener('click', resetConfig);
-
-    // Setup other listeners (presets, modals, etc.)
-    document.getElementById('savePresetBtn')?.addEventListener('click', saveCurrentAsPreset);
-    document.getElementById('saveToPresetBtn')?.addEventListener('click', saveToCurrentPreset);
-    document.getElementById('cancelPresetBtn')?.addEventListener('click', cancelPresetChanges);
-    document.getElementById('deletePresetBtn')?.addEventListener('click', deleteCurrentPreset);
-    document.getElementById('presetSelector')?.addEventListener('change', (e) => loadPreset(e.target.value));
-
-    // Server modal listeners
-    document.getElementById('addServerBtn')?.addEventListener('click', () => openServerConfig(null)); // null indicates new server
-    document.getElementById('cancelServerConfig')?.addEventListener('click', () => closeModal('serverConfigModal'));
-    document.getElementById('saveServerConfigBtn')?.addEventListener('click', saveServerConfig);
-    document.getElementById('addArgumentBtn')?.addEventListener('click', () => addServerArg());
-    document.getElementById('addEnvVarBtn')?.addEventListener('click', () => addServerEnv());
-
-    console.log('Initialization complete');
-    showLoadingIndicator(false);
-
-    // Set initial view - Fix selector
-    const initialTab = document.querySelector(".tab[onclick*=\"showView('servers\"]");
-    showView('servers', initialTab);
 }
 
 // Helper for loading indicator
@@ -2068,4 +1926,522 @@ function removeMCPServer(serverKey) {
         showToast(`Error: Cannot remove server "${serverKey}", it was not found.`, 'error');
         console.error(`Attempted to remove non-existent server: ${serverKey}`);
     }
+}
+
+// Global variables for Monaco Editor (moved to the top of the file)
+// let jsonEditor = null;
+// let currentEditorTab = 'form';
+
+// Update the configuration mode indicator based on the current state
+function updateConfigModeIndicator() {
+    const badge = document.getElementById('modeBadge');
+    const modeText = document.getElementById('currentConfigMode');
+    const description = document.getElementById('configModeDescription');
+    const backButton = document.getElementById('backToServerEditor');
+    
+    if (clientSettings.syncClients) {
+        // Global mode (sync ON)
+        badge.textContent = 'Global';
+        badge.className = 'mode-badge global';
+        modeText.textContent = 'Global Configuration';
+        description.textContent = 'Changes will affect all enabled clients';
+        backButton.style.display = 'none'; // No back button in global mode
+    } else if (currentLoadedClientId) {
+        // Client-specific mode
+        const clientName = clientSettings.clients[currentLoadedClientId]?.name || currentLoadedClientId;
+        badge.textContent = clientName;
+        badge.className = 'mode-badge client';
+        modeText.textContent = `Client: ${clientName}`;
+        description.textContent = 'Editing configuration specifically for this client';
+        backButton.style.display = 'inline-block'; // Show back button in client mode
+    } else {
+        // Fallback for any other state
+        badge.textContent = 'Unknown';
+        badge.className = 'mode-badge';
+        modeText.textContent = 'Unknown';
+        description.textContent = 'Select a client from the sidebar or enable sync mode';
+        backButton.style.display = 'none';
+    }
+}
+
+// Return to the server editor from any other view
+function returnToServerEditor() {
+    showView('servers');
+    // Make sure we're showing the server editor, not another view
+    document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+    document.querySelector('.tab[onclick*="showView(\'servers\'"]').classList.add('active');
+}
+
+// Switch between form and JSON editors
+function switchEditorTab(tabName) {
+    // Update tab UI
+    document.getElementById('formEditorTab').classList.toggle('active', tabName === 'form');
+    document.getElementById('jsonEditorTab').classList.toggle('active', tabName === 'json');
+    
+    // Toggle panel visibility
+    document.getElementById('formEditorPanel').style.display = tabName === 'form' ? 'block' : 'none';
+    document.getElementById('jsonEditorPanel').style.display = tabName === 'json' ? 'block' : 'none';
+    
+    currentEditorTab = tabName;
+    
+    if (tabName === 'json' && jsonEditor) {
+        // When switching to JSON, sync from form if that's where we came from
+        if (jsonEditor.getValue() === '') {
+            updateJSONFromForm();
+        }
+        // Need to explicitly layout in case container size changed
+        jsonEditor.layout();
+    } else if (tabName === 'form') {
+        // When switching to form, sync from JSON
+        if (jsonEditor && jsonEditor.getValue()) {
+            try {
+                updateFormFromJSON();
+            } catch (e) {
+                console.error('Error updating form from JSON:', e);
+                showWarning('Error updating form from JSON: ' + e.message);
+            }
+        }
+    }
+}
+
+// Initialize the Monaco editor
+function initMonacoEditor() {
+    if (jsonEditor) return; // Already initialized
+    
+    try {
+        jsonEditor = monaco.editor.create(document.getElementById('monacoContainer'), {
+            value: '',
+            language: 'json',
+            theme: 'vs',
+            automaticLayout: true,
+            formatOnPaste: true,
+            formatOnType: true,
+            minimap: { enabled: false },
+            scrollBeyondLastLine: false,
+            lineNumbers: 'on',
+            renderIndentGuides: true,
+            matchBrackets: 'always',
+            scrollbar: {
+                useShadows: false,
+                verticalScrollbarSize: 10,
+                horizontalScrollbarSize: 10
+            }
+        });
+        
+        // Add format document button
+        const formatAction = jsonEditor.addAction({
+            id: 'format-json',
+            label: 'Format JSON',
+            keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KEY_F],
+            run: () => {
+                jsonEditor.getAction('editor.action.formatDocument').run();
+                return null;
+            }
+        });
+        
+        console.log('Monaco editor initialized');
+    } catch (e) {
+        console.error('Error initializing Monaco editor:', e);
+        showWarning('Failed to initialize JSON editor. Falling back to form view.');
+        currentEditorTab = 'form';
+    }
+}
+
+// Update the JSON editor content from the form values
+function updateJSONFromForm() {
+    if (!jsonEditor) return;
+    
+    try {
+        const serverName = document.getElementById('serverName').value;
+        const config = {
+            command: document.getElementById('serverCommand').value,
+            args: [],
+            env: {}
+        };
+        
+        // Get arguments
+        document.querySelectorAll('#serverArgs .arg-item').forEach(item => {
+            const input = item.querySelector('input');
+            if (input && input.value.trim()) {
+                config.args.push(input.value.trim());
+            }
+        });
+        
+        // Get environment variables
+        document.querySelectorAll('#serverEnv .env-item').forEach(item => {
+            const keyInput = item.querySelector('.env-key-input');
+            const valueInput = item.querySelector('.env-value-input');
+            if (keyInput && valueInput && keyInput.value.trim()) {
+                config.env[keyInput.value.trim()] = valueInput.value;
+            }
+        });
+        
+        // Add connection type (subprocess/sse)
+        const serverType = document.getElementById('serverType').value;
+        if (serverType === 'sse') {
+            config.sseUrl = document.getElementById('sseUrl').value;
+        }
+        
+        // Add inspector settings if enabled
+        if (document.getElementById('enableInspector').checked) {
+            config.enableInspector = true;
+            config.inspectorPort = parseInt(document.getElementById('inspectorPort').value);
+        }
+        
+        // Format the JSON and set editor value
+        const formattedJson = JSON.stringify(config, null, 2);
+        jsonEditor.setValue(formattedJson);
+    } catch (e) {
+        console.error('Error updating JSON from form:', e);
+        showWarning('Error updating JSON from form');
+    }
+}
+
+// Update the form with values from the JSON editor
+function updateFormFromJSON() {
+    if (!jsonEditor) return;
+    
+    try {
+        const jsonText = jsonEditor.getValue();
+        if (!jsonText.trim()) return;
+        
+        const config = JSON.parse(jsonText);
+        
+        // Set basic fields
+        document.getElementById('serverCommand').value = config.command || '';
+        
+        // Clear existing args and add new ones
+        const argsContainer = document.getElementById('serverArgs');
+        argsContainer.innerHTML = '';
+        if (config.args && Array.isArray(config.args)) {
+            config.args.forEach(arg => {
+                addServerArg(arg);
+            });
+        }
+        
+        // Clear existing env vars and add new ones
+        const envContainer = document.getElementById('serverEnv');
+        envContainer.innerHTML = '';
+        if (config.env && typeof config.env === 'object') {
+            Object.entries(config.env).forEach(([key, value]) => {
+                addServerEnv(key, value);
+            });
+        }
+        
+        // Set connection type
+        const serverType = config.sseUrl ? 'sse' : 'subprocess';
+        document.getElementById('serverType').value = serverType;
+        document.getElementById('sseUrlContainer').style.display = serverType === 'sse' ? 'block' : 'none';
+        if (config.sseUrl) {
+            document.getElementById('sseUrl').value = config.sseUrl;
+        }
+        
+        // Set inspector settings
+        document.getElementById('enableInspector').checked = !!config.enableInspector;
+        document.getElementById('inspectorOptionsContainer').style.display = config.enableInspector ? 'block' : 'none';
+        if (config.inspectorPort) {
+            document.getElementById('inspectorPort').value = config.inspectorPort;
+        }
+    } catch (e) {
+        console.error('Error updating form from JSON:', e);
+        showWarning('Invalid JSON: ' + e.message);
+    }
+}
+
+// Resolve executable paths for npm, npx, node in the configuration
+async function resolveExecutablePaths() {
+    if (!jsonEditor) return;
+    
+    const pathInfo = document.getElementById('pathInfo');
+    pathInfo.innerHTML = '<div>Resolving paths...</div>';
+    
+    try {
+        const config = JSON.parse(jsonEditor.getValue());
+        
+        // Check if command is npm, npx, or node
+        const command = config.command;
+        if (!command) {
+            pathInfo.innerHTML = '<div class="path-warning">No command found in configuration</div>';
+            return;
+        }
+        
+        // Send command to server for path resolution
+        const response = await fetchWithTimeout('/api/resolve-path', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command })
+        });
+        
+        if (response.path) {
+            // Display the resolved path
+            pathInfo.innerHTML = `
+                <div class="path-resolved">
+                    <strong>Resolved path:</strong> ${response.path}
+                </div>
+                <div>
+                    <small>Using absolute paths can help avoid issues with Node.js version conflicts.</small>
+                </div>
+            `;
+            
+            // Ask user if they want to update the command
+            if (confirm(`Replace "${command}" with resolved path "${response.path}"?`)) {
+                config.command = response.path;
+                jsonEditor.setValue(JSON.stringify(config, null, 2));
+                showToast('Command updated with resolved path');
+            }
+        } else {
+            pathInfo.innerHTML = `<div class="path-warning">Could not resolve path for "${command}"</div>`;
+        }
+    } catch (e) {
+        console.error('Error resolving paths:', e);
+        pathInfo.innerHTML = `<div class="path-warning">Error: ${e.message}</div>`;
+    }
+}
+
+// Override the original openServerConfig to include Monaco editor support
+function openServerConfig(serverName) {
+    const isNew = serverName === 'new';
+    const modal = document.getElementById('serverConfigModal');
+    
+    // Set or clear the server name
+    document.getElementById('serverName').value = isNew ? '' : serverName;
+    document.getElementById('serverName').readOnly = !isNew;
+    
+    // Initialize Monaco if not already done
+    initMonacoEditor();
+    
+    if (isNew) {
+        // Clear form for new server
+        document.getElementById('serverCommand').value = '';
+        document.getElementById('serverArgs').innerHTML = '';
+        document.getElementById('serverEnv').innerHTML = '';
+        document.getElementById('serverType').value = 'subprocess';
+        document.getElementById('sseUrlContainer').style.display = 'none';
+        document.getElementById('enableInspector').checked = false;
+        document.getElementById('inspectorOptionsContainer').style.display = 'none';
+        
+        // Set default JSON for new server
+        jsonEditor.setValue(JSON.stringify({
+            command: "",
+            args: [],
+            env: {}
+        }, null, 2));
+    } else {
+        // Fill form with existing server config
+        const server = mcpServers[serverName];
+        document.getElementById('serverCommand').value = server.command || '';
+        
+        // Clear and populate args
+        document.getElementById('serverArgs').innerHTML = '';
+        if (server.args && Array.isArray(server.args)) {
+            server.args.forEach(arg => {
+                addServerArg(arg);
+            });
+        }
+        
+        // Clear and populate env vars
+        document.getElementById('serverEnv').innerHTML = '';
+        if (server.env) {
+            Object.entries(server.env).forEach(([key, value]) => {
+                addServerEnv(key, value);
+            });
+        }
+        
+        // Set connection type
+        const serverType = server.sseUrl ? 'sse' : 'subprocess';
+        document.getElementById('serverType').value = serverType;
+        document.getElementById('sseUrlContainer').style.display = serverType === 'sse' ? 'block' : 'none';
+        if (server.sseUrl) {
+            document.getElementById('sseUrl').value = server.sseUrl;
+        }
+        
+        // Set inspector settings
+        document.getElementById('enableInspector').checked = !!server.enableInspector;
+        document.getElementById('inspectorOptionsContainer').style.display = server.enableInspector ? 'block' : 'none';
+        if (server.inspectorPort) {
+            document.getElementById('inspectorPort').value = server.inspectorPort;
+        }
+        
+        // Set JSON editor with formatted config
+        jsonEditor.setValue(JSON.stringify(server, null, 2));
+    }
+    
+    // Start with form tab by default
+    switchEditorTab('form');
+    
+    // Show the modal
+    modal.style.display = 'block';
+}
+
+// Override the original saveServerConfig to handle both form and JSON editors
+function saveServerConfig() {
+    try {
+        let config;
+        
+        // Get server name from the form (same for both tabs)
+        const serverNameInput = document.getElementById('serverName');
+        let serverName = serverNameInput.value.trim();
+        
+        if (currentEditorTab === 'json') {
+            // Get config from JSON editor
+            try {
+                config = JSON.parse(jsonEditor.getValue());
+            } catch (e) {
+                showWarning('Invalid JSON: ' + e.message);
+                return;
+            }
+        } else {
+            // Get config from form (original implementation)
+            const serverCommand = document.getElementById('serverCommand').value.trim();
+            if (!serverCommand) {
+                showWarning('Command is required');
+                return;
+            }
+            
+            config = {
+                command: serverCommand,
+                args: [],
+                env: {}
+            };
+            
+            // Gather args
+            document.querySelectorAll('#serverArgs .arg-item').forEach(item => {
+                const input = item.querySelector('input');
+                if (input && input.value.trim()) {
+                    config.args.push(input.value.trim());
+                }
+            });
+            
+            // Gather env vars
+            document.querySelectorAll('#serverEnv .env-item').forEach(item => {
+                const keyInput = item.querySelector('.env-key-input');
+                const valueInput = item.querySelector('.env-value-input');
+                if (keyInput && valueInput && keyInput.value.trim()) {
+                    config.env[keyInput.value.trim()] = valueInput.value;
+                }
+            });
+            
+            // Check if it's an SSE connection
+            const serverType = document.getElementById('serverType').value;
+            if (serverType === 'sse') {
+                const sseUrl = document.getElementById('sseUrl').value.trim();
+                if (!sseUrl) {
+                    showWarning('SSE URL is required for SSE connections');
+                    return;
+                }
+                config.sseUrl = sseUrl;
+            }
+            
+            // Add inspector settings if enabled
+            if (document.getElementById('enableInspector').checked) {
+                config.enableInspector = true;
+                config.inspectorPort = parseInt(document.getElementById('inspectorPort').value);
+            }
+        }
+        
+        // Handle creating a new server
+        if (!serverName || serverName === 'new') {
+            // For new servers, prompt for a name
+            serverName = prompt('Enter a name for this MCP server:');
+            if (!serverName) return; // User cancelled
+            
+            if (mcpServers[serverName]) {
+                // Name already exists
+                if (!confirm(`Server "${serverName}" already exists. Overwrite it?`)) {
+                    return;
+                }
+            }
+        }
+        
+        // Store the config and close the modal
+        mcpServers[serverName] = config;
+        renderServers();
+        configChanged();
+        closeModal('serverConfigModal');
+        showToast(`Server "${serverName}" configuration saved`);
+    } catch (error) {
+        console.error('Error saving server config:', error);
+        showWarning('Error saving server configuration: ' + error.message);
+    }
+}
+
+// Global variable to track the view mode
+// let isServersMode = true; // Default to server configuration mode
+
+// Function to select servers mode
+function selectServersMode() {
+    console.log('Switching to servers mode');
+    isServersMode = true;
+    
+    // Update UI
+    document.getElementById('serversOption').classList.add('active');
+    document.querySelectorAll('.client-item').forEach(item => {
+        item.classList.remove('active');
+    });
+    
+    // Show servers view
+    showView('servers');
+    
+    // Load main config
+    loadMainConfig();
+    
+    // Update any other UI elements as needed
+    selectedClientId = null;
+    
+    // Make sure we're showing the servers tab
+    document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+    document.querySelector('.tab[onclick*="showView(\'servers\'"]').classList.add('active');
+    
+    // Show the add server buttons
+    const topAddButton = document.getElementById('topAddServerButton');
+    if (topAddButton) {
+        topAddButton.style.display = 'flex';
+    }
+    renderServers(); // Re-render to show the bottom button
+}
+
+// Function to toggle server enabled state
+function toggleServer(name, enabled) {
+    console.log(`Toggling server ${name} to ${enabled ? 'enabled' : 'disabled'}`);
+    
+    if (mcpServers[name]) {
+        mcpServers[name].enabled = enabled;
+        
+        // Also update the original objects for consistency
+        if (currentConfig.mcpServers && currentConfig.mcpServers[name]) {
+            currentConfig.mcpServers[name].enabled = enabled;
+        }
+        
+        if (allServersConfig.mcpServers && allServersConfig.mcpServers[name]) {
+            allServersConfig.mcpServers[name].enabled = enabled;
+        }
+        
+        // Check if this causes changes compared to the original config
+        configChanged();
+        
+        // No need to re-render, as the checkbox state will be updated by the browser
+    } else {
+        console.error(`Server ${name} not found in mcpServers object`);
+    }
+}
+
+// Function to copy an environment variable to clipboard
+function copyEnvVarToClipboard(key, value) {
+    // Create a temporary textarea element to copy from
+    const textarea = document.createElement('textarea');
+    textarea.value = value;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'absolute';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    
+    // Select and copy the text
+    textarea.select();
+    document.execCommand('copy');
+    
+    // Remove the temporary element
+    document.body.removeChild(textarea);
+    
+    // Show a toast notification
+    showToast(`Copied ${key}=${value} to clipboard`, 'success');
 }

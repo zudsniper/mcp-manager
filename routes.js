@@ -653,16 +653,28 @@ router.get('/api/config/differs', (req, res) => {
 */
 
 
-// Endpoint to get presets
-router.get('/presets', async (req, res) => {
-    console.log('GET /api/presets');
+// Endpoint to get presets - updated to return full presets object
+router.get('/api/presets', (req, res) => {
     try {
-        const presets = await readPresetsFile();
-        // Return keys (names) as an array
-        res.json(Object.keys(presets));
+        // Set proper content type header
+        res.setHeader('Content-Type', 'application/json');
+        
+        const PRESETS_FILE = path.join(__dirname, 'presets.json');
+        
+        if (!fs.existsSync(PRESETS_FILE)) {
+            console.log('Presets file not found, returning empty object');
+            return res.json({});
+        }
+        
+        const presetsData = fs.readFileSync(PRESETS_FILE, 'utf8');
+        const presets = JSON.parse(presetsData);
+        
+        // Return the object of presets rather than just keys
+        return res.json(presets);
     } catch (error) {
-        console.error('Failed to read presets:', error);
-        res.status(500).json({ error: 'Failed to read presets file' });
+        console.error('Error getting presets:', error);
+        // Return empty object on error rather than error status
+        return res.json({});
     }
 });
 
@@ -764,6 +776,37 @@ router.get('/check-configs', async (req, res) => {
      }
 });
 
+// Resolve executable paths for npm/npx/node commands
+router.post('/api/resolve-path', (req, res) => {
+    try {
+        const { command } = req.body;
+        
+        if (!command) {
+            return res.status(400).json({ error: 'Command is required' });
+        }
+        
+        // Extract the base command (before any arguments)
+        const baseCommand = command.split(' ')[0];
+        
+        // Check if it's a command we should resolve
+        if (!/^(npm|npx|node|yarn|pnpm)$/.test(baseCommand)) {
+            return res.json({ message: 'Not a resolvable command', path: command });
+        }
+        
+        // Use which command to find the absolute path
+        const { execSync } = require('child_process');
+        try {
+            const path = execSync(`which ${baseCommand}`).toString().trim();
+            return res.json({ path, originalCommand: command });
+        } catch (error) {
+            console.error(`Error resolving path for ${baseCommand}:`, error);
+            return res.status(404).json({ error: `Could not resolve path for ${baseCommand}` });
+        }
+    } catch (error) {
+        console.error('Error in path resolution endpoint:', error);
+        return res.status(500).json({ error: 'Internal server error resolving path' });
+    }
+});
 
 // *** Initialization and other routes ***
 
@@ -911,3 +954,28 @@ async function readConfigFile(filePath) {
         throw error;
     }
 }
+
+// Get available presets
+router.get('/api/presets', (req, res) => {
+    try {
+        // Set proper content type header
+        res.setHeader('Content-Type', 'application/json');
+        
+        const PRESETS_FILE = path.join(__dirname, 'presets.json');
+        
+        if (!fs.existsSync(PRESETS_FILE)) {
+            console.log('Presets file not found, returning empty object');
+            return res.json({});
+        }
+        
+        const presetsData = fs.readFileSync(PRESETS_FILE, 'utf8');
+        const presets = JSON.parse(presetsData);
+        
+        // Return the object of presets rather than just keys
+        return res.json(presets);
+    } catch (error) {
+        console.error('Error getting presets:', error);
+        // Return empty object on error rather than error status
+        return res.json({});
+    }
+});

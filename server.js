@@ -1,38 +1,47 @@
-import express from 'express';
-import path from 'path';
 import { fileURLToPath } from 'url';
+import path from 'path';
+import express from 'express';
 import apiRoutes from './routes.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const app = express();
-const port = process.env.PORT || 3456;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-// Middleware
+const app = express();
+const PORT = process.env.PORT || 3456;
+
+// Configure middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// API Routes - Mount directly without the /api prefix since routes already include it
+// Configure static file serving from current directory
+console.log(`Setting up static file serving from: ${__dirname}`);
+app.use(express.static(__dirname));
+
+// Log all incoming API requests
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    console.log(`${req.method} ${req.path}`);
+  }
+  next();
+});
+
+// Configure API routes
 console.log('Mounting API routes');
 app.use(apiRoutes);
 
-// Static file serving
-const staticDir = __dirname;
-console.log('Setting up static file serving from:', staticDir);
-app.use(express.static(staticDir));
-
-// Serve index.html for all other routes
+// Fallback route for SPA
 app.get('*', (req, res) => {
-    console.log('Serving index.html for:', req.path);
-    res.sendFile(path.join(__dirname, 'index.html'));
+  console.log(`Serving index.html for: ${req.path}`);
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Start server
-app.listen(port, () => {
-    console.log(`MCP Manager running at http://localhost:${port}`);
-    console.log('Current directory:', __dirname);
-    console.log('Available routes:');
-    console.log('  GET  /api/config');
-    console.log('  GET  /api/config/initial');
-    console.log('  GET  /api/clients');
-    console.log('  GET  /api/settings');
+// Start the server
+app.listen(PORT, () => {
+  console.log(`MCP Server Manager running on http://localhost:${PORT}`);
+  console.log('Current directory:', __dirname);
+  console.log('Available routes:');
+  console.log('  GET  /api/config');
+  console.log('  GET  /api/config/initial');
+  console.log('  GET  /api/clients');
+  console.log('  GET  /api/settings');
 });
