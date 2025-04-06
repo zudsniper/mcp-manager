@@ -21,6 +21,7 @@ let selectedClientId = null; // Track the currently selected client ID in non-sy
 let hasUnsavedChanges = false; // Track unsaved changes in the current editor session
 let lastLoadedClientId = null; // Remember the last client loaded when sync is off
 let isServersMode = true; // Default to server configuration mode
+let jsonEditor = null; // Monaco editor instance
 
 // API endpoints
 const API = {
@@ -30,7 +31,11 @@ const API = {
     SETTINGS: '/api/settings',
     SETTINGS_SAVE: '/api/settings',
     CHECK_CONFIGS: '/api/check-configs', // Checks for diffs between *original* client files (only relevant in sync mode)
-    RESET_CONFIG: '/api/reset-config' // Endpoint for resetting
+    RESET_CONFIG: '/api/reset-config', // Endpoint for resetting
+    PRESETS: '/api/presets',
+    PRESET_GET: '/api/presets/',
+    PRESET_SAVE: '/api/presets/',
+    PRESET_DELETE: '/api/presets/'
 };
 
 function showMessage(message, isError = true, type = null) {
@@ -239,9 +244,27 @@ function renderEnvironmentVars(env) {
         return '';
     }
 
+    // Function to check if a key is for sensitive data
+    function isSensitiveEnvVar(key) {
+        return /(key|token|secret|pass|password|auth)/i.test(key);
+    }
+    
+    // Function to mask sensitive values
+    function maskValue(value) {
+        return '******';
+    }
+
     let html = '<div class="server-env-vars">';
     Object.entries(env).forEach(([key, value]) => {
-        html += `<div class="env-var">${key}=${value}</div>`;
+        const isSensitive = isSensitiveEnvVar(key);
+        const displayValue = isSensitive ? maskValue(value) : value;
+        html += `
+            <div class="env-var-pair" data-sensitive="${isSensitive}" onclick="copyEnvVarToClipboard('${key}', '${value}')">
+                <span class="env-key">${key}</span>
+                <span class="env-value">${displayValue}</span>
+                <span class="copy-feedback">Copied!</span>
+            </div>
+        `;
     });
     html += '</div>';
     
@@ -600,33 +623,15 @@ async function saveConfiguration() {
 async function loadPresetsList() {
     console.log('Loading presets list...');
     try {
-        // Check if we're in development mode with mock data
-        if (window.location.hostname === 'localhost' && !window.FORCE_API) {
-            console.log('Using mock presets data in dev mode');
-            presets = {
-                'Default': { mcpServers: {} },
-                'Development': { mcpServers: {} }
-            };
-            updatePresetSelector();
-            return;
-        }
-        
         // Add a timestamp to prevent caching
         const timestamp = new Date().getTime();
         const response = await fetchWithTimeout(`${API.PRESETS}?_=${timestamp}`);
         
-        // Verify response type before parsing
-        const contentType = response.headers?.get('content-type');
-        if (!contentType || !contentType.includes('application/json')) {
-            throw new Error(`Expected JSON response but got ${contentType || 'unknown content type'}`);
-        }
-        
-        const data = await response.json();
-        if (data && typeof data === 'object') {
-            presets = data;
+        if (response && typeof response === 'object') {
+            presets = response;
             updatePresetSelector();
         } else {
-            console.warn('Received invalid presets data:', data);
+            console.warn('Received invalid presets data:', response);
             presets = {}; // Set empty object as fallback
             updatePresetSelector();
         }
@@ -652,7 +657,7 @@ function updatePresetSelector() {
     // Add empty option
     const emptyOption = document.createElement('option');
     emptyOption.value = '';
-    emptyOption.textContent = '-- Select a preset --';
+    emptyOption.textContent = Object.keys(presets).length > 0 ? '-- Select a preset --' : '-- No presets available --';
     selector.appendChild(emptyOption);
     
     // Add options for each preset
@@ -669,6 +674,21 @@ async function loadPreset(presetName) {
     if (!presetName || presetName === '') {
         // If blank option or invalid name, do nothing
         console.log('No preset selected, keeping current config');
+        currentPreset = null;
+        originalPresetConfig = {};
+        updatePresetButtons(false);
+        return;
+    }
+    
+    // Check if preset exists in the presets object first
+    if (!presets[presetName]) {
+        console.error(`Preset '${presetName}' does not exist in the loaded presets list`);
+        showWarning(`Cannot load preset '${presetName}': Preset not found`);
+        
+        // Reset the dropdown to blank option
+        const presetSelector = document.getElementById('presetSelector');
+        if (presetSelector) presetSelector.value = '';
+        
         currentPreset = null;
         originalPresetConfig = {};
         updatePresetButtons(false);
@@ -698,7 +718,12 @@ async function loadPreset(presetName) {
         showMessage(`Loaded preset '${presetName}'. Use "Save Changes to Preset" to update, or "Save Changes to Claude/Cursor" to apply.`, false);
     } catch (error) {
         console.error(`Failed to load preset '${presetName}':`, error);
-        showMessage(`Failed to load preset '${presetName}': ${error.message}`);
+        showWarning(`Failed to load preset '${presetName}': ${error.message}`);
+        
+        // Reset the dropdown to blank option
+        const presetSelector = document.getElementById('presetSelector');
+        if (presetSelector) presetSelector.value = '';
+        
         currentPreset = null;
         originalPresetConfig = {};
         updatePresetButtons(false);
