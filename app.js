@@ -24,6 +24,7 @@ let isServersMode = true; // Default to server configuration mode
 let jsonEditor = null; // Monaco editor instance
 let currentEditorTab = 'form'; // Current tab in the server config modal
 let hasModalChanges = false; // Track unsaved changes in the server config modal
+let isShiftPressed = false; // Track if shift key is pressed
 
 // API endpoints
 const API = {
@@ -248,29 +249,26 @@ function renderEnvironmentVars(env) {
 
     // Function to check if a key is for sensitive data
     function isSensitiveEnvVar(key) {
-        return /(key|token|secret|pass|password|auth)/i.test(key);
-    }
-    
-    // Function to mask sensitive values
-    function maskValue(value) {
-        return '******';
+        const lowerKey = key.toLowerCase();
+        return lowerKey.includes('key') || lowerKey.includes('token') || lowerKey.includes('secret');
     }
 
-    let html = '<div class="server-env-vars">';
-    Object.entries(env).forEach(([key, value]) => {
+    // Function to mask value
+    function maskValue(value) {
+        return '********'; // Always mask initially
+    }
+
+    return Object.entries(env).map(([key, value]) => {
         const isSensitive = isSensitiveEnvVar(key);
-        const displayValue = isSensitive ? maskValue(value) : value;
-        html += `
-            <div class="env-var-pair" data-sensitive="${isSensitive}" onclick="if(event.shiftKey) { copyEnvVarToClipboard('${key}', '${value}'); }">
-                <span class="env-key">${key}</span>
-                <span class="env-value">${displayValue}</span>
-                <span class="copy-feedback">Copied!</span>
+        // Use data attribute to store the real value for reveal/copy
+        return `
+            <div class="env-var-pair" data-key="${key}" data-value="${value}" data-sensitive="${isSensitive}" title="${isSensitive ? 'Hover to reveal, SHIFT + Click to copy' : ''}">
+                <span class="env-key">${key}:</span>
+                <span class="env-value" data-value="${value}">${isSensitive ? maskValue(value) : value}</span>
+                <span class="copy-feedback" style="display: none;">Copied!</span>
             </div>
         `;
-    });
-    html += '</div>';
-    
-    return html;
+    }).join('');
 }
 
 // Function to render the servers view with proper button visibility logic
@@ -1389,80 +1387,96 @@ function configChanged() {
 }
 
 async function initializeApp() {
-    console.log('Initializing app...');
+    console.log("Initializing MCP Server Manager...");
+
+    // Setup event listeners for tabs
+    document.querySelectorAll('.tabs .tab').forEach(tab => {
+        // Only add listener if not disabled
+        if (!tab.classList.contains('disabled')) {
+            tab.addEventListener('click', () => {
+                showView(tab.textContent.toLowerCase().trim(), tab);
+            });
+        }
+    });
+
+    // Setup event listeners for preset buttons (example)
+    // Assuming buttons exist with appropriate IDs
+    // document.getElementById('savePresetBtn').addEventListener('click', saveCurrentAsPreset);
+    // document.getElementById('deletePresetBtn').addEventListener('click', deleteCurrentPreset);
+
+    // Load initial data
+    await loadAppSettings(); // Load settings first
+    renderClientSidebar(); // Render sidebar based on loaded settings
+    updateConfigModeIndicator(); // Update mode indicator based on initial settings
+
+    // Load the initial configuration based on sync mode or last loaded client
+    await loadInitialConfiguration(lastLoadedClientId);
+
+    await loadPresetsList();
+
+    // Setup listeners for save/reset buttons
+    document.getElementById('saveChangesBtn').addEventListener('click', saveChanges);
+    document.getElementById('resetChangesBtn').addEventListener('click', resetConfiguration);
+
+    // Setup listener for sync toggle
+    document.getElementById('syncClientsToggle').addEventListener('change', toggleClientSync);
     
-    // Show loading indicator
-    showLoadingIndicator(true, 'Loading app configuration...');
+    // Setup listeners for modal interactions (close button, save, reset)
+    document.getElementById('serverConfigModal').querySelector('.close-button').addEventListener('click', () => closeModal('serverConfigModal'));
+    document.getElementById('serverConfigModal').querySelector('.save-button').addEventListener('click', saveServerConfig);
+    document.getElementById('serverConfigModal').querySelector('.reset-button').addEventListener('click', resetServerConfig);
     
-    try {
-        // Initialize the top add server button visibility - hidden by default
-        const topAddButton = document.getElementById('topAddServerButton');
-        if (topAddButton) {
-            topAddButton.style.display = 'none';
+    // Listener for clicking outside the modal to close it (only if no unsaved changes)
+    document.getElementById('serverConfigModal').addEventListener('click', (event) => {
+        if (event.target === event.currentTarget) { // Check if click is on the background
+             if (hasModalChanges) {
+                 const modalContent = document.getElementById('serverConfigModal').querySelector('.modal-content');
+                 modalContent.classList.add('shake-animation');
+                 showWarning("You have unsaved changes. Please save or reset.");
+                 setTimeout(() => modalContent.classList.remove('shake-animation'), 500); // Remove shake after animation
+            } else {
+                closeModal('serverConfigModal');
+            }
         }
-        
-        // Load application settings first
-        await loadAppSettings().catch(error => {
-            console.error('Error loading app settings:', error);
-            // Set some defaults if settings fail to load
-            clientSettings = { clients: {}, syncClients: false };
-        });
-        
-        // Render client sidebar
-        renderClientSidebar();
-        
-        // Attach sync toggle event listener
-        const syncToggle = document.getElementById('syncClientsToggle');
-        if (syncToggle) {
-            syncToggle.checked = clientSettings.syncClients || false;
-            syncToggle.addEventListener('change', toggleClientSync);
+    });
+    
+    // Setup listeners for editor tabs
+    document.getElementById('formEditorTab').addEventListener('click', () => switchEditorTab('form'));
+    document.getElementById('jsonEditorTab').addEventListener('click', () => switchEditorTab('json'));
+
+    // Initialize Monaco editor (if needed for JSON tab)
+    initMonacoEditor();
+
+    // Add event delegation for server card actions (edit, toggle)
+    document.getElementById('serversView').addEventListener('click', (event) => {
+        const target = event.target;
+        const serverCard = target.closest('.server-card');
+        if (!serverCard) return;
+        const serverKey = serverCard.dataset.serverKey;
+
+        if (target.classList.contains('edit-button')) {
+            openServerConfig(serverKey);
+        } else if (target.closest('.toggle-switch')) {
+            // Find the actual input checkbox
+            const checkbox = target.closest('.toggle-switch').querySelector('input[type="checkbox"]');
+            if (checkbox) {
+                toggleServerEnabled(serverKey, checkbox.checked);
+            }
         }
-        
-        // Try to load presets but continue if it fails
-        try {
-            await loadPresetsList();
-        } catch (error) {
-            console.error('Error loading presets:', error);
-            // Continue with app initialization
-        }
-        
-        // Load initial configuration based on mode
-        if (isServersMode) {
-            await loadMainConfig().catch(error => {
-                console.error('Error loading main config:', error);
-                mcpServers = {}; // Set empty as fallback
-                renderServers();
-            });
-        } else if (selectedClientId) {
-            await loadConfigForClient(selectedClientId).catch(error => {
-                console.error(`Error loading config for client ${selectedClientId}:`, error);
-                mcpServers = {}; // Set empty as fallback
-                renderServers();
-            });
-        } else {
-            // Default to servers mode if no client is selected
-            isServersMode = true;
-            await loadMainConfig().catch(error => {
-                console.error('Error loading main config:', error);
-                mcpServers = {}; // Set empty as fallback
-                renderServers();
-            });
-        }
-        
-        // Set up event listeners for save/reset buttons
-        document.getElementById('saveChangesBtn')?.addEventListener('click', saveChanges);
-        document.getElementById('resetChangesBtn')?.addEventListener('click', resetChanges);
-        
-        // Make sure we properly update visibility
-        showView('servers');
-        
-        console.log('App initialized successfully.');
-    } catch (error) {
-        console.error('Error initializing app:', error);
-        showWarning('Failed to initialize the application properly.');
-    } finally {
-        showLoadingIndicator(false);
+    });
+
+    // Add listener for the global "Add Server" button
+    document.getElementById('topAddServerButton').addEventListener('click', () => openServerConfig('new'));
+
+    // Initial check for config differences if sync is on
+    if (settings.syncClients) {
+        await checkOriginalConfigDifferences();
     }
+    
+    // Setup hover/click listeners for env vars
+    setupEnvVarInteraction();
+
+    console.log("MCP Server Manager Initialized.");
 }
 
 // Helper for loading indicator
@@ -1474,6 +1488,25 @@ function showLoadingIndicator(show, message = 'Loading...') {
         indicator.style.display = show ? 'flex' : 'none';
     }
 }
+
+// Function to handle shift keydown globally
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Shift') {
+        isShiftPressed = true;
+        document.body.classList.add('shift-pressed');
+        // Rerender servers to show keys if needed, or just rely on CSS
+        // Could optimize by only updating env var visibility
+    }
+});
+
+// Function to handle shift keyup globally
+document.addEventListener('keyup', (event) => {
+    if (event.key === 'Shift') {
+        isShiftPressed = false;
+        document.body.classList.remove('shift-pressed');
+        // Rerender or update visibility
+    }
+});
 
 // DOMContentLoaded ensures the DOM is ready before running the script
 document.addEventListener('DOMContentLoaded', initializeApp);
@@ -2402,22 +2435,55 @@ function toggleServer(name, enabled) {
 }
 
 // Function to copy an environment variable to clipboard
-function copyEnvVarToClipboard(key, value) {
-    // Create a temporary textarea element to copy from
-    const textarea = document.createElement('textarea');
-    textarea.value = value;
-    textarea.setAttribute('readonly', '');
-    textarea.style.position = 'absolute';
-    textarea.style.left = '-9999px';
-    document.body.appendChild(textarea);
+function copyEnvVarToClipboard(key, value, element) {
+    if (!isShiftPressed) {
+        console.log('Shift not pressed, copy cancelled.');
+        return; // Only copy if shift is pressed
+    }
     
-    // Select and copy the text
-    textarea.select();
-    document.execCommand('copy');
-    
-    // Remove the temporary element
-    document.body.removeChild(textarea);
-    
-    // Show a toast notification
-    showToast(`Copied ${key}=${value} to clipboard`, 'success');
+    navigator.clipboard.writeText(value).then(() => {
+        console.log(`Copied ${key} to clipboard`);
+        const feedback = element.querySelector('.copy-feedback');
+        if (feedback) {
+            feedback.style.display = 'inline';
+            setTimeout(() => {
+                feedback.style.display = 'none';
+            }, 1500); // Hide after 1.5 seconds
+        }
+    }).catch(err => {
+        console.error('Failed to copy text: ', err);
+        showWarning('Could not copy to clipboard.');
+    });
+}
+
+// Event delegation for hover and click on env vars within serversView
+// Do this once in initializeApp
+function setupEnvVarInteraction() {
+    const serversView = document.getElementById('serversView');
+    if (!serversView) return;
+
+    serversView.addEventListener('mouseover', (event) => {
+        const envValueSpan = event.target.closest('.env-value');
+        if (envValueSpan && envValueSpan.parentElement.dataset.sensitive === 'true') {
+            const realValue = envValueSpan.dataset.value;
+            envValueSpan.textContent = realValue; // Reveal on hover
+        }
+    });
+
+    serversView.addEventListener('mouseout', (event) => {
+        const envValueSpan = event.target.closest('.env-value');
+        // Only re-mask if shift is NOT pressed
+        if (envValueSpan && envValueSpan.parentElement.dataset.sensitive === 'true' && !isShiftPressed) {
+            envValueSpan.textContent = '********'; // Re-mask when not hovering
+        }
+    });
+
+    serversView.addEventListener('click', (event) => {
+        const envPairDiv = event.target.closest('.env-var-pair');
+        if (envPairDiv && envPairDiv.dataset.sensitive === 'true') {
+            const key = envPairDiv.dataset.key;
+            const value = envPairDiv.dataset.value;
+            copyEnvVarToClipboard(key, value, envPairDiv); // Pass the element for feedback
+        }
+    });
 }

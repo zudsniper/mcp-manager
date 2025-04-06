@@ -9,8 +9,6 @@
 </head>
 <body>
     <div class="container">
-        <h1>MCP Server Manager</h1>
-        
         <!-- Messages will be converted to toasts -->
         <div id="errorMessage" class="message error" style="display: none;"></div>
         <div id="successMessage" class="message success" style="display: none;"></div>
@@ -51,8 +49,8 @@
                 <!-- Navigation -->
                 <div class="tabs">
                     <button class="tab active" onclick="showView('servers', this)">Servers</button>
-                    <button class="tab" onclick="showView('tools', this)">Tools</button>
-                    <button class="tab" onclick="showView('backups', this)">Backups</button>
+                    <button class="tab disabled" onclick="showView('tools', this)">Tools</button>
+                    <button class="tab disabled" onclick="showView('backups', this)">Backups</button>
                     <!-- Add Server button at the top (only visible in Servers view) -->
                     <button id="topAddServerButton" class="add-server-top-button" onclick="openServerConfig('new')">
                         <span class="add-icon">+</span>
@@ -229,7 +227,6 @@
             </div>
             
             <div class="modal-buttons">
-                <button type="button" onclick="closeModal('serverConfigModal')" class="cancel-button">Cancel</button>
                 <button type="button" onclick="resetServerConfig()" class="reset-button" style="display: none;">Reset Changes</button>
                 <button type="button" onclick="saveServerConfig()" class="save-button">Save Configuration</button>
             </div>
@@ -257,6 +254,13 @@
         <div class="loading-spinner"></div>
         <div id="loadingMessage">Loading...</div>
     </div>
+
+    <!-- Simple Footer -->
+    <footer class="app-footer">
+        <span>Version 1.1.0</span> | 
+        <span>MIT License</span> | 
+        <span><a href="https://github.com/zudsniper" target="_blank" rel="noopener noreferrer">@zudsniper</a></span>
+    </footer>
 
     <!-- Add Monaco Editor from CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>

@@ -979,3 +979,49 @@ router.get('/api/presets', (req, res) => {
         return res.json({});
     }
 });
+
+// API endpoint to check for differences between original client config files
+router.get('/api/check-configs', async (req, res) => {
+    console.log('GET /api/check-configs - Checking original client file differences');
+    if (!settings.syncClients) {
+        return res.json({ configsDiffer: false, differences: [] });
+    }
+
+    const enabledClientPaths = getEnabledClientConfigPaths();
+    if (enabledClientPaths.length < 2) {
+        return res.json({ configsDiffer: false, differences: [] }); // No need to check if less than 2 clients
+    }
+
+    let referenceConfig = null;
+    let referenceClientId = null;
+    const differences = [];
+    let configsDiffer = false;
+
+    try {
+        for (const clientId in settings.clients) {
+            const client = settings.clients[clientId];
+            if (client.enabled && client.configPath) {
+                const config = await readConfigFile(client.configPath); // Read the actual file
+                if (referenceConfig === null) {
+                    referenceConfig = config;
+                    referenceClientId = clientId;
+                } else {
+                    if (!_.isEqual(referenceConfig, config)) {
+                        configsDiffer = true;
+                        differences.push({ 
+                            client1: referenceClientId,
+                            client2: clientId,
+                            message: `${settings.clients[referenceClientId]?.name || referenceClientId} and ${client.name || clientId} configs differ.`
+                        });
+                        // Break early if we only need to know *if* they differ
+                        // break; 
+                    }
+                }
+            }
+        }
+        res.json({ configsDiffer, differences });
+    } catch (error) {
+        console.error('Error comparing original client config files:', error);
+        res.status(500).json({ error: 'Failed to compare client configurations' });
+    }
+});

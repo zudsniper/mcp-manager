@@ -81,6 +81,17 @@ h1 {
     color: white;
 }
 
+/* Add style for disabled tabs */
+.tab.disabled {
+    color: #aaa; /* Greyed out text */
+    cursor: not-allowed; /* Indicate not clickable */
+    background-color: #eee; /* Different background */
+}
+
+.tab.disabled:hover {
+    background-color: #eee; /* Keep background same on hover */
+}
+
 /* Add server button at the top */
 .add-server-top-button {
     margin-left: auto;
@@ -398,29 +409,45 @@ input:checked + .slider:before {
     line-height: 1.5;
 }
 
+/* Updated modal button styles */
 .modal-buttons {
     display: flex;
-    justify-content: flex-end;
-    gap: 10px;
-    margin-top: 20px;
+    justify-content: center; /* Center buttons horizontally */
+    gap: 15px; /* Add space between buttons */
+    margin-top: 25px; /* Increase top margin */
+    padding-top: 15px; /* Add padding above buttons */
+    border-top: 1px solid var(--border-color); /* Add separator line */
 }
 
 .modal-buttons button {
-    padding: 8px 15px;
+    padding: 10px 20px; /* Slightly larger padding */
     border: none;
-    border-radius: 4px;
+    border-radius: 6px; /* Slightly more rounded */
     font-weight: 500;
     cursor: pointer;
+    min-width: 120px; /* Ensure minimum width */
+    text-align: center;
 }
+
+/* Remove specific background color from base button */
+/* .modal-buttons button { ... remove background-color ... } */
 
 .modal-buttons .save-button {
     background-color: var(--primary-color);
     color: white;
+    /* Add hover/focus styles if not handled by other classes */
+}
+.modal-buttons .save-button:hover {
+    background-color: var(--primary-hover);
 }
 
 .modal-buttons .reset-button {
     background-color: var(--error-color);
     color: white;
+     /* Add hover/focus styles if not handled by other classes */
+}
+.modal-buttons .reset-button:hover {
+    background-color: #d32f2f; /* Darker red on hover */
 }
 
 /* Preset Controls Styles */
@@ -1228,4 +1255,23 @@ body.shift-pressed .env-var-pair[data-sensitive="true"] .env-value,
     justify-content: center;
     padding: 0;
     flex-shrink: 0; /* Prevent squishing */
+}
+
+/* Footer Styles */
+.app-footer {
+    text-align: center;
+    padding: 1rem;
+    margin-top: 2rem;
+    border-top: 1px solid var(--border-color);
+    font-size: 0.9em;
+    color: #666;
+}
+
+.app-footer a {
+    color: var(--primary-color);
+    text-decoration: none;
+}
+
+.app-footer a:hover {
+    text-decoration: underline;
 }
