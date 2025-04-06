@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MCP Server Manager</title>
     <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body>
     <div class="container">
@@ -24,6 +25,12 @@
         <div class="content-grid">
             <!-- Left Content Area -->
             <div class="main-content">
+                <!-- Configuration Mode Indicator -->
+                <div id="configModeIndicator" class="config-mode-indicator">
+                    <div class="mode-title">Configuration Mode: <span id="currentConfigMode">Loading...</span></div>
+                    <div class="mode-description" id="configModeDescription">Select a client from the sidebar to edit its configuration.</div>
+                </div>
+                
                 <!-- Preset Controls -->
                 <div class="preset-controls">
                     <label for="presetSelector">Preset:</label>
@@ -80,10 +87,14 @@
     <!-- Toast Container for notifications -->
     <div class="toast-container" id="toastContainer"></div>
 
-    <!-- Floating Buttons Container -->
-    <div class="floating-buttons" id="floatingButtons" style="display: none;">
-        <button class="save-button" onclick="saveChanges()">Save Changes</button>
-        <button class="reset-button" onclick="resetChanges()">Reset Changes</button>
+    <!-- Floating Save/Reset Buttons -->
+    <div id="floatingButtons" class="fixed bottom-4 left-1/2 transform -translate-x-1/2 z-50 flex space-x-4 hidden">
+        <button id="resetChangesBtn" class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-6 rounded-lg shadow-md transition duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800">
+            Reset
+        </button>
+        <button id="saveChangesBtn" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded-lg shadow-md transition duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800">
+            Save
+        </button>
     </div>
 
     <!-- Save Warning Modal -->
@@ -206,6 +217,14 @@
         </div>
     </div>
 
+    <!-- Loading indicator -->
+    <div id="loadingIndicator" class="loading-overlay">
+        <div class="loading-spinner"></div>
+        <div id="loadingMessage">Loading...</div>
+    </div>
+
+    <!-- Add Lodash from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

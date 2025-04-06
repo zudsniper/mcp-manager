@@ -11,9 +11,9 @@ const port = process.env.PORT || 3456;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// API Routes
-console.log('Mounting API routes at /api');
-app.use('/api', apiRoutes);
+// API Routes - Mount directly without the /api prefix since routes already include it
+console.log('Mounting API routes');
+app.use(apiRoutes);
 
 // Static file serving
 const staticDir = __dirname;
@@ -31,9 +31,8 @@ app.listen(port, () => {
     console.log(`MCP Manager running at http://localhost:${port}`);
     console.log('Current directory:', __dirname);
     console.log('Available routes:');
-    console.log('  GET  /api/test');
-    console.log('  GET  /api/cursor-config');
-    console.log('  GET  /api/claude-config');
-    console.log('  GET  /api/tools');
-    console.log('  POST /api/save-configs');
+    console.log('  GET  /api/config');
+    console.log('  GET  /api/config/initial');
+    console.log('  GET  /api/clients');
+    console.log('  GET  /api/settings');
 });

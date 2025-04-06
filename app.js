@@ -10,6 +10,17 @@ let clientSettings = {};
 let activeClients = [];
 let currentLoadedClientId = null; // Track which client's config is currently loaded (null if sync ON and main loaded)
 
+// Global state variables
+let currentConfig = { mcpServers: {} }; // Holds the configuration currently being edited/displayed
+let presets = {};
+let settings = {};
+let initialActiveConfig = { mcpServers: {} }; // Store the initially loaded ACTIVE servers (structure only) for comparison
+let allServersConfig = { mcpServers: {} }; // Store the full registry state loaded from server, including enabled flags
+let selectedClientId = null; // Track the currently selected client ID in non-sync mode
+// let currentConfigFilePath = ''; // Likely redundant now, path determined by selectedClientId/syncMode
+let hasUnsavedChanges = false; // Track unsaved changes in the current editor session
+let lastLoadedClientId = null; // Remember the last client loaded when sync is off
+
 // API endpoints
 const API = {
     CONFIG: '/api/config', // Gets main or client-specific based on query param and sync setting
@@ -42,6 +53,11 @@ function showMessage(message, isError = true, type = null) {
 
 function showWarning(message) {
     showMessage(message, false, 'warning');
+}
+
+// Add showToast function that was missing
+function showToast(message, type = 'success') {
+    showMessage(message, type === 'error', type);
 }
 
 async function fetchWithTimeout(url, options = {}) {
@@ -472,15 +488,28 @@ function renderTools() {
 function toggleServer(name, enabled) {
     console.log(`Toggling server ${name} to ${enabled ? 'enabled' : 'disabled'}`);
     
+    // Update the mcpServers object (for backwards compatibility with older code)
     if (mcpServers[name]) {
-        // Update the server config
         mcpServers[name].enabled = enabled;
-        
-        // Call configChanged to update UI
-        configChanged();
     } else {
-        console.error(`Server ${name} not found in config`);
+        console.error(`Server ${name} not found in mcpServers object`);
     }
+    
+    // Also update currentConfig to ensure all state objects are in sync
+    if (currentConfig.mcpServers && currentConfig.mcpServers[name]) {
+        currentConfig.mcpServers[name].enabled = enabled;
+    }
+    
+    // Update allServersConfig for completeness
+    if (allServersConfig.mcpServers && allServersConfig.mcpServers[name]) {
+        allServersConfig.mcpServers[name].enabled = enabled;
+    }
+    
+    // Check for changes and update UI state
+    checkForChanges();
+    
+    // Re-render the servers display to reflect the new state
+    displayMCPConfig();
 }
 
 async function renderBackups() {
@@ -611,51 +640,119 @@ async function performSave(targetClientIds, configDataToSave) {
     }
 }
 
-// Reset Config Function
-async function resetConfig() {
-    console.log("Reset Config initiated");
-    const confirmReset = confirm("Are you sure you want to discard your current changes and reset the configuration to the last saved state?");
-    if (!confirmReset) {
-        return;
-    }
-
-    showLoadingIndicator(true, 'Resetting...');
+// Reset configuration to the initial loaded state
+async function resetConfiguration() {
+    // No confirmation needed anymore
+    showLoadingIndicator(true, 'Resetting configuration...');
     try {
-        let clientIdToReset = null;
-        if (!clientSettings.syncClients) {
-            // Sync OFF: Reset the currently loaded client's config
-            if (!currentLoadedClientId) {
-                showWarning("Cannot reset: No client configuration is loaded.");
-                showLoadingIndicator(false);
-                return;
-            }
-            clientIdToReset = currentLoadedClientId;
-            console.log(`Sync OFF: Requesting reset for client: ${clientIdToReset}`);
+        // Fetch the definitive initial active configuration structure from the server
+        const response = await fetch('/api/config/initial'); // Use the dedicated endpoint
+        if (!response.ok) {
+             const errorData = await response.json().catch(() => ({ error: 'Failed to parse error response' }));
+            throw new Error(`Failed to fetch initial configuration state: ${errorData.error || response.statusText}`);
+        }
+        const fetchedInitialActiveConfig = await response.json();
+        
+        // Update our local reference for initial state
+        initialActiveConfig = _.cloneDeep(fetchedInitialActiveConfig);
+        console.log("Refreshed initial active config for reset:", JSON.stringify(initialActiveConfig.mcpServers || {}, null, 2));
+        
+        // Reset currentConfig: Start with the full registry state (allServersConfig) 
+        // and apply the just-fetched initial active flags.
+        currentConfig = _.cloneDeep(allServersConfig); // Get all servers from registry memory
+        
+        // Apply the correct 'enabled' flags based on the initial active state
+         if (currentConfig.mcpServers && initialActiveConfig.mcpServers) {
+             Object.keys(currentConfig.mcpServers).forEach(key => {
+                 // Enable if the key exists in the initial active config, disable otherwise
+                 currentConfig.mcpServers[key].enabled = !!initialActiveConfig.mcpServers[key]; 
+             });
+         } else if (currentConfig.mcpServers) {
+             // If initial active config was empty, disable all
+              Object.keys(currentConfig.mcpServers).forEach(key => {
+                 currentConfig.mcpServers[key].enabled = false;
+             });
+         }
+
+        console.log("Configuration reset to initial state using fetched initial active config.");
+        displayMCPConfig(); // Re-render with the reset state
+        hasUnsavedChanges = false; // Reset flag
+        updateFloatingButtonsVisibility(); // Hide buttons
+        showToast('Changes reverted to the last saved state.', 'success');
+    } catch (error) {
+        console.error('Error resetting configuration:', error);
+        showToast(`Error resetting configuration: ${error.message}`, 'error');
+    } finally {
+        showLoadingIndicator(false);
+    }
+}
+
+// Save current configuration
+async function saveConfiguration() {
+    // No confirmation needed anymore
+    showLoadingIndicator(true, 'Saving configuration...');
+    try {
+        // Prepare the data to send: the entire currentConfig (which includes enabled flags)
+        const configToSave = currentConfig; 
+
+        // Determine the URL (include clientId if sync is off and a client is selected)
+        let url = '/api/config';
+        if (!settings.syncClients && selectedClientId) { // Use selectedClientId which tracks UI selection
+            url += `?clientId=${selectedClientId}`;
+             console.log(`Saving config for specific client: ${selectedClientId}`);
         } else {
-            console.log(`Sync ON: Requesting reset of main config`);
+             console.log(`Saving config (Sync Mode: ${settings.syncClients})`);
         }
 
-        const response = await fetchWithTimeout(API.RESET_CONFIG, {
+        const response = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ clientId: clientIdToReset }) // Send clientId only if sync is OFF
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(configToSave), // Send the whole working state
         });
 
-        if (response.success && response.resetConfig) {
-            showMessage('Configuration reset successfully.', false);
-            // Load the reset config into the editor
-            mcpServers = response.resetConfig.mcpServers || {};
-            originalConfig = JSON.parse(JSON.stringify(mcpServers));
-            renderServers();
-            configChanged(); // Should hide buttons now
-            hideConfigWarning(); // Reset implies consistency now
-        } else {
-            throw new Error(response.error || "Failed to reset configuration. No reset config data returned.");
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Save failed: ${errorText || response.statusText}`);
         }
 
+        const successMessage = await response.text();
+
+        // --- Post-Save State Update --- 
+        // The server has updated the registry and the active file.
+        // Now, update the local state variables to match the new baseline.
+
+        // 1. Update initialActiveConfig: Rebuild it from the just saved currentConfig (enabled servers only)
+        initialActiveConfig = { mcpServers: {} };
+        if (currentConfig.mcpServers) {
+            Object.entries(currentConfig.mcpServers).forEach(([key, server]) => {
+                if (server.enabled) {
+                    const serverDetails = _.omit(server, 'enabled');
+                    initialActiveConfig.mcpServers[key] = _.cloneDeep(serverDetails);
+                }
+            });
+        }
+        
+        // 2. Update allServersConfig: It should now reflect the currentConfig state 
+        // (since currentConfig was sent to the server, which updated the registry)
+        allServersConfig = _.cloneDeep(currentConfig);
+
+        console.log("Configuration saved successfully.");
+        console.log("Updated local initial active state:", JSON.stringify(initialActiveConfig.mcpServers || {}, null, 2));
+        // console.log("Updated local all servers state:", JSON.stringify(allServersConfig.mcpServers || {}, null, 2));
+
+
+        hasUnsavedChanges = false; // Mark changes as saved
+        updateFloatingButtonsVisibility(); // Hide buttons
+        showToast(successMessage || 'Configuration saved successfully.', 'success');
+        
+        // Check sync status again after saving, as backend might have updated original client files
+        await checkSyncStatus(); 
+
     } catch (error) {
-        console.error("Error resetting configuration:", error);
-        showWarning(`Failed to reset configuration: ${error.message}`);
+        console.error('Error saving configuration:', error);
+        showToast(`Error saving configuration: ${error.message}`, 'error');
     } finally {
         showLoadingIndicator(false);
     }
@@ -1038,6 +1135,10 @@ async function selectClient(clientId, element) {
     console.log(`Client selected: ${clientId}`);
     const syncEnabled = clientSettings.syncClients;
 
+    // Update the configuration mode indicator
+    const modeSpan = document.getElementById('currentConfigMode');
+    const modeDescription = document.getElementById('configModeDescription');
+    
     if (syncEnabled) {
         // Sync ON: Multiple selection (toggle) - CURRENTLY NOT SUPPORTED BY SAVE/LOAD LOGIC
         // For now, treat sync ON as meaning "use main config"
@@ -1045,6 +1146,11 @@ async function selectClient(clientId, element) {
         // Deselect all visually and load main config?
         activeClients = [];
         document.querySelectorAll('.client-item.active').forEach(el => el.classList.remove('active'));
+        
+        // Update mode indicator
+        if (modeSpan) modeSpan.textContent = "Global Sync Mode";
+        if (modeDescription) modeDescription.textContent = "Changes will be applied to all enabled clients.";
+        
         await loadMainConfig();
         // OR allow selection but don't load client-specific? Let's do the former.
 
@@ -1061,11 +1167,21 @@ async function selectClient(clientId, element) {
             // Deselecting the currently selected one - load nothing? Or main? Let's load main.
             element.classList.remove('active');
             activeClients = [];
+            
+            // Update mode indicator
+            if (modeSpan) modeSpan.textContent = "No Client Selected";
+            if (modeDescription) modeDescription.textContent = "Select a client from the sidebar to edit its configuration.";
+            
             await loadMainConfig(); // Load main as a neutral state
         } else {
             // Selecting a new one
             element.classList.add('active');
             activeClients = [clientId]; // Only one active client
+            
+            // Update mode indicator
+            if (modeSpan) modeSpan.textContent = `${clientSettings.clients[clientId]?.name || clientId}`;
+            if (modeDescription) modeDescription.textContent = `Editing configuration for ${clientSettings.clients[clientId]?.name || clientId}.`;
+            
             // Load the config for this specific client
             await loadConfigForClient(clientId);
         }
@@ -1300,9 +1416,22 @@ async function initializeApp() {
         syncToggle.addEventListener('change', toggleClientSync);
     }
 
+    // Set initial configuration mode indicator
+    const modeSpan = document.getElementById('currentConfigMode');
+    const modeDescription = document.getElementById('configModeDescription');
+    
+    if (settings?.syncClients) {
+        if (modeSpan) modeSpan.textContent = "Global Sync Mode";
+        if (modeDescription) modeDescription.textContent = "Changes will be applied to all enabled clients.";
+    } else {
+        // When starting in non-sync mode, we'll set this based on the selected client in loadInitialConfiguration
+        if (modeSpan) modeSpan.textContent = "Loading...";
+        if (modeDescription) modeDescription.textContent = "Select a client from the sidebar to edit its configuration.";
+    }
+
     // Initial config load: Load main config by default.
     // Client selection will trigger client-specific loads if sync is off.
-    await loadMainConfig();
+    await loadInitialConfiguration();
 
     // Add event listeners (ensure they are added only once)
     const saveBtn = document.getElementById('saveChangesBtn');
@@ -1375,3 +1504,568 @@ window.saveServerConfig = saveServerConfig;
 
 // Add new export for clipboard copy
 window.copyEnvVarToClipboard = copyEnvVarToClipboard;
+
+// Debounce function
+function debounce(func, wait) {
+    let timeout;
+    return function(...args) {
+        const context = this;
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(context, args), wait);
+    };
+}
+
+// Add resetConfig function that was missing
+function resetConfig() {
+    resetConfiguration();
+}
+
+// Add updateClientSelectionUI function that was missing
+function updateClientSelectionUI() {
+    // This function should update the UI to reflect the current client selection
+    // based on the selectedClientId
+    console.log('Updating client selection UI - selectedClientId:', selectedClientId);
+    
+    // First, remove 'active' class from all client items
+    const clientItems = document.querySelectorAll('.client-item');
+    clientItems.forEach(item => {
+        item.classList.remove('active');
+    });
+    
+    // If a client is selected, add 'active' class to that client
+    if (selectedClientId) {
+        const selectedItem = document.querySelector(`.client-item[data-client-id="${selectedClientId}"]`);
+        if (selectedItem) {
+            selectedItem.classList.add('active');
+        }
+    }
+}
+
+// Fetch initial configuration based on sync status and selected client
+async function loadInitialConfiguration(clientId = null) {
+    showLoadingIndicator(true, 'Loading configuration...'); // Correct function call
+    hasUnsavedChanges = false; // Reset unsaved changes flag on load
+    currentLoadedClientId = null; // Reset loaded client ID initially
+    try {
+        let url = API.CONFIG; // Use the defined API constant instead of a string
+        // Determine which config state to request based on sync mode
+        if (!settings?.syncClients) { // Safe access for syncClients
+            // If sync is off, request state for a specific client
+            // Use provided clientId, or last loaded, or find first enabled
+            // Add check for settings.clients before using Object.keys
+            const availableClients = settings?.clients ? Object.keys(settings.clients) : [];
+            const targetClientId = clientId || 
+                                 settings?.lastSelectedClient || 
+                                 availableClients.find(id => settings.clients[id]?.enabled && settings.clients[id]?.configPath) ||
+                                 (availableClients.length > 0 ? availableClients[0] : null); // Default to first client if none selected
+            
+            if (targetClientId) {
+                url += `?clientId=${targetClientId}`;
+                selectedClientId = targetClientId; // Set the *selected* client ID (for UI)
+                lastLoadedClientId = targetClientId; // Remember this client was loaded
+                currentLoadedClientId = targetClientId; // Track that this specific client's state is loaded
+                console.log(`Sync OFF: Requesting state for client: ${selectedClientId}`);
+                
+                // Update the configuration mode indicator
+                const modeSpan = document.getElementById('currentConfigMode');
+                const modeDescription = document.getElementById('configModeDescription');
+                if (modeSpan) modeSpan.textContent = `${settings?.clients[targetClientId]?.name || targetClientId}`;
+                if (modeDescription) modeDescription.textContent = `Editing configuration for ${settings?.clients[targetClientId]?.name || targetClientId}.`;
+                
+                // Ensure client is highlighted in the sidebar immediately
+                setTimeout(() => {
+                    const clientElement = document.querySelector(`.client-item[data-client-id="${targetClientId}"]`);
+                    if (clientElement) {
+                        clientElement.classList.add('active');
+                        activeClients = [targetClientId]; // Update active clients array
+                    }
+                }, 100);
+                
+                // Load client-specific config instead of main config
+                await loadConfigForClient(targetClientId);
+                return; // Exit early as we've handled the client-specific load
+            } else {
+                 console.log("Sync OFF: No client specified or enabled/found. Requesting default state (likely main config).");
+                 selectedClientId = null; // Ensure no client is marked as selected UI-wise
+                 // Requesting default state without clientId might load main config.json
+            }
+        } else {
+            console.log("Sync ON: Requesting combined state (main active config + registry).");
+            selectedClientId = null; // No specific client selected in sync mode
+            currentLoadedClientId = null; // Indicates main config is the source
+        }
+
+        const response = await fetch(url);
+        
+        // Get response text first
+        const responseText = await response.text();
+        
+        if (!response.ok) {
+            console.error(`Server returned ${response.status}: ${responseText}`);
+            throw new Error(`Failed to load configuration state: ${response.statusText}`);
+        }
+        
+        // Safely parse the JSON with better error handling
+        let combinedServerState;
+        try {
+            combinedServerState = JSON.parse(responseText);
+        } catch (parseError) {
+            console.error("JSON Parse Error:", parseError, "Response was:", responseText.substring(0, 200) + "...");
+            throw new Error(`Failed to parse server response: ${parseError.message}`);
+        }
+        
+        // 1. Store the full state including enabled flags
+        allServersConfig = combinedServerState || { mcpServers: {} }; 
+
+        // 2. Store the initial ACTIVE config structure (for comparison)
+        initialActiveConfig = { mcpServers: {} };
+        if (allServersConfig.mcpServers) {
+            Object.entries(allServersConfig.mcpServers).forEach(([key, server]) => {
+                if (server.enabled) {
+                    // Deep clone server data, remove the transient 'enabled' flag before storing for comparison
+                    const serverDetails = _.omit(server, 'enabled'); 
+                    initialActiveConfig.mcpServers[key] = _.cloneDeep(serverDetails);
+                }
+            });
+        }
+
+        // 3. Current working config starts as a deep clone of the full loaded state
+        currentConfig = _.cloneDeep(allServersConfig); 
+        
+        console.log("Full Server State Loaded (Registry + Active Flags):", JSON.stringify(allServersConfig.mcpServers || {}, null, 2));
+        console.log("Initial Active Config Structure Stored (For Comparison):", JSON.stringify(initialActiveConfig.mcpServers || {}, null, 2));
+
+        displayMCPConfig(); // Render based on currentConfig
+        updateClientSelectionUI(); // Update client selection highlight based on selectedClientId
+        checkForChanges(); // Initial check (should be false)
+        updateFloatingButtonsVisibility(); // Hide buttons initially
+
+    } catch (error) {
+        console.error('Error loading configuration state:', error);
+        showToast(`Error loading configuration state: ${error.message}`, 'error');
+        // Display empty state if load fails
+        currentConfig = { mcpServers: {} };
+        initialActiveConfig = { mcpServers: {} };
+        allServersConfig = { mcpServers: {} };
+        displayMCPConfig(); // Display empty
+        updateFloatingButtonsVisibility(); // Ensure buttons hidden
+    } finally {
+        showLoadingIndicator(false); // Correct function call
+    }
+}
+
+// Check if current configuration differs from the initial active configuration
+function checkForChanges() {
+     // Get only the enabled servers from the current working config
+     const currentEnabledServers = {};
+     if (currentConfig.mcpServers) {
+         Object.entries(currentConfig.mcpServers).forEach(([key, server]) => {
+             if (server.enabled) {
+                 // Clone server data, remove transient 'enabled' flag for comparison
+                 const serverDetails = _.omit(server, 'enabled');
+                 currentEnabledServers[key] = serverDetails;
+             }
+         });
+     }
+
+    // Deep compare the current *enabled* structure with the initial *active* structure
+    // console.log("Checking for changes...");
+    // console.log("Current Enabled Structure:", JSON.stringify(currentEnabledServers, null, 2));
+    // console.log("Initial Active Structure:", JSON.stringify(initialActiveConfig.mcpServers || {}, null, 2));
+    
+    hasUnsavedChanges = !_.isEqual(currentEnabledServers, initialActiveConfig.mcpServers || {});
+    // console.log("Has Unsaved Changes:", hasUnsavedChanges);
+    
+    updateFloatingButtonsVisibility(); // Update button visibility based on the check
+}
+
+// Update visibility of Save/Reset buttons
+function updateFloatingButtonsVisibility() {
+    const buttonsContainer = document.getElementById('floatingButtons');
+    if (hasUnsavedChanges) {
+        buttonsContainer.classList.remove('hidden');
+    } else {
+        buttonsContainer.classList.add('hidden');
+    }
+}
+
+// Load and display MCP config
+function displayMCPConfig() {
+    const configDisplay = document.getElementById('configDisplay');
+    
+    // Check if configDisplay exists, if not, create it inside serversView
+    if (!configDisplay) {
+        console.log('Creating missing configDisplay element');
+        const serversView = document.getElementById('serversView');
+        if (serversView) {
+            const newConfigDisplay = document.createElement('div');
+            newConfigDisplay.id = 'configDisplay';
+            newConfigDisplay.className = 'config-display';
+            serversView.appendChild(newConfigDisplay);
+            // Now try to get it again
+            const reQueryConfigDisplay = document.getElementById('configDisplay');
+            if (!reQueryConfigDisplay) {
+                console.error('Failed to create configDisplay element');
+                return; // Exit if we still can't create it
+            }
+            // Continue with the newly created element
+            return displayMCPConfig(); // Recursive call now that element exists
+        } else {
+            console.error('Cannot create configDisplay: serversView element not found');
+            return; // Exit if serversView doesn't exist
+        }
+    }
+    
+    configDisplay.innerHTML = ''; // Clear previous display
+    const statusDiv = document.getElementById('statusMessages');
+    // statusDiv.innerHTML = ''; // Don't clear toasts here
+
+    // Use currentConfig which holds the working state (including enabled flags)
+    if (!currentConfig || !currentConfig.mcpServers || Object.keys(currentConfig.mcpServers).length === 0) {
+        configDisplay.innerHTML = '<p class="text-gray-500 text-center py-8">No MCP servers configured. Click "Add Server" to get started.</p>';
+        updateFloatingButtonsVisibility(); // Ensure buttons are hidden if empty
+        return;
+    }
+
+    // Get servers from the working copy (currentConfig)
+    const servers = currentConfig.mcpServers;
+    const filterInput = document.getElementById('filterInput');
+    const filterText = filterInput ? filterInput.value.toLowerCase() : '';
+
+    // Separate enabled and disabled servers based on the 'enabled' flag in currentConfig
+    const enabledServers = Object.entries(servers)
+        .filter(([key, server]) => server.enabled)
+        .sort(([keyA], [keyB]) => keyA.localeCompare(keyB));
+    
+    const disabledServers = Object.entries(servers)
+        .filter(([key, server]) => !server.enabled)
+        .sort(([keyA], [keyB]) => keyA.localeCompare(keyB));
+
+    // Combine, putting enabled servers first
+    const sortedServers = [...enabledServers, ...disabledServers];
+
+    if (sortedServers.length === 0 && filterText) {
+        configDisplay.innerHTML = '<p class="text-gray-500 text-center py-8">No MCP servers match the current filter.</p>';
+    } else if (sortedServers.length === 0) {
+        // This case should be handled by the initial check, but as a fallback:
+        configDisplay.innerHTML = '<p class="text-gray-500 text-center py-8">No MCP servers configured.</p>';
+    }
+
+    sortedServers.forEach(([key, serverData]) => {
+        // Apply filtering based on key or JSON content
+        const serverJsonString = JSON.stringify(_.omit(serverData, 'enabled')).toLowerCase(); // Exclude 'enabled' from filter search
+        if (filterText && !key.toLowerCase().includes(filterText) && !serverJsonString.includes(filterText)) {
+            return; // Skip if filter doesn't match key or content
+        }
+        
+        const serverElement = createServerElement(key, serverData);
+        // Add subtle visual distinction for disabled servers
+        if (!serverData.enabled) {
+            serverElement.classList.add('opacity-60'); // Example: reduce opacity
+            serverElement.classList.add('border-dashed'); 
+        }
+        configDisplay.appendChild(serverElement);
+    });
+
+    // Add event listeners for dynamically created elements 
+    configDisplay.querySelectorAll('.remove-server-btn').forEach(button => {
+        // Check if listener already exists to prevent duplicates if displayMCPConfig is called often
+        if (!button.dataset.listenerAttached) {
+             button.addEventListener('click', (event) => {
+                const serverKey = event.target.closest('.server-container').dataset.serverKey;
+                removeMCPServer(serverKey);
+             });
+             button.dataset.listenerAttached = 'true';
+        }
+    });
+
+     configDisplay.querySelectorAll('.server-toggle').forEach(toggle => {
+        if (!toggle.dataset.listenerAttached) {
+            toggle.addEventListener('change', (event) => {
+                const serverKey = event.target.closest('.server-container').dataset.serverKey;
+                const isEnabled = event.target.checked;
+                toggleServerEnabled(serverKey, isEnabled);
+            });
+             toggle.dataset.listenerAttached = 'true';
+        }
+    });
+    
+    configDisplay.querySelectorAll('.server-title-input').forEach(input => {
+        if (!input.dataset.listenerAttached) {
+            input.addEventListener('change', handleServerRename); // Use existing handler
+            input.dataset.listenerAttached = 'true';
+        }
+    });
+    
+    configDisplay.querySelectorAll('.server-content').forEach(textarea => {
+         if (!textarea.dataset.listenerAttached) {
+            // Use debounced input handler for textareas to avoid excessive checks
+             textarea.addEventListener('input', debounce(handleInputChange, 500)); 
+             textarea.dataset.listenerAttached = 'true';
+         }
+     });
+
+    // Initial check for button visibility after display
+    // updateFloatingButtonsVisibility(); // Called by functions that modify config
+}
+
+function createServerElement(key, serverData) {
+     const container = document.createElement('div');
+    // Basic classes + add border for structure
+    container.classList.add('server-container', 'bg-white', 'dark:bg-gray-700', 'p-4', 'rounded-lg', 'shadow', 'mb-4', 'border', 'border-gray-200', 'dark:border-gray-600');
+    container.dataset.serverKey = key;
+
+    // Header with Toggle, Title, and Remove button
+    const header = document.createElement('div');
+    header.classList.add('flex', 'justify-between', 'items-center', 'mb-3'); // Increased bottom margin
+
+    // Left side: Toggle + Title
+    const leftSide = document.createElement('div');
+    leftSide.classList.add('flex', 'items-center', 'flex-grow', 'mr-2');
+
+    // Toggle Switch - visually improved
+    const toggleLabel = document.createElement('label');
+    toggleLabel.classList.add('relative', 'inline-flex', 'items-center', 'cursor-pointer', 'mr-4'); // Added right margin
+    const toggleInput = document.createElement('input');
+    toggleInput.type = 'checkbox';
+    toggleInput.checked = serverData.enabled === true; // Set based on the server's state in currentConfig
+    toggleInput.classList.add('sr-only', 'peer', 'server-toggle');
+    const toggleDiv = document.createElement('div');
+    // Tailwind classes for a standard toggle switch appearance
+    toggleDiv.classList.add(
+        'w-11', 'h-6', 'bg-gray-200', 'peer-focus:outline-none', 'peer-focus:ring-2', 
+        'peer-focus:ring-blue-300', 'dark:peer-focus:ring-blue-800', 'rounded-full', 'peer', 
+        'dark:bg-gray-600', 'peer-checked:after:translate-x-full', 'rtl:peer-checked:after:-translate-x-full', 
+        'peer-checked:after:border-white', 'after:content-[""]', 'after:absolute', 'after:top-[2px]', 
+        'after:start-[2px]', 'after:bg-white', 'after:border-gray-300', 'after:border', 
+        'after:rounded-full', 'after:h-5', 'after:w-5', 'after:transition-all', 
+        'dark:border-gray-500', 'peer-checked:bg-blue-600'
+    );
+    toggleLabel.appendChild(toggleInput);
+    toggleLabel.appendChild(toggleDiv);
+    
+    // Server Title (Editable Input)
+    const titleInput = document.createElement('input');
+    titleInput.type = 'text';
+    titleInput.value = key;
+    // Styling for the input field
+    titleInput.classList.add(
+        'server-title-input', // Add class for event delegation
+        'text-lg', 'font-semibold', 'text-gray-900', 'dark:text-white',
+        'flex-grow', 'p-1', 'bg-transparent', // Make background transparent initially
+        'border-b-2', 'border-transparent', // Bottom border, transparent initially
+        'focus:outline-none', 'focus:border-blue-500', // Blue border on focus
+        'hover:border-gray-300', 'dark:hover:border-gray-500' // Subtle border on hover
+    );
+    titleInput.dataset.originalKey = key; // Store original key for renaming logic
+    // Listener added in displayMCPConfig using delegation
+
+    leftSide.appendChild(toggleLabel);
+    leftSide.appendChild(titleInput);
+
+    // Right side: Remove Button
+    const removeBtn = document.createElement('button');
+    removeBtn.textContent = 'Remove';
+    // Consistent button styling
+    removeBtn.classList.add(
+        'remove-server-btn', 
+        'bg-red-600', 'hover:bg-red-700', 'dark:bg-red-700', 'dark:hover:bg-red-800', 
+        'text-white', 'font-medium', // Changed font weight
+        'py-1', 'px-3', // Adjusted padding
+        'rounded-md', // Rounded corners
+        'text-sm', 'transition', 'duration-150', 'ease-in-out', 
+        'focus:outline-none', 'focus:ring-2', 'focus:ring-red-500', 'focus:ring-offset-2', 'dark:focus:ring-offset-gray-800'
+    );
+    // Listener added in displayMCPConfig using delegation
+
+    header.appendChild(leftSide);
+    header.appendChild(removeBtn);
+
+    // Server Content (Textarea)
+    const content = document.createElement('textarea');
+    content.classList.add(
+        'server-content', 'w-full', 'h-48', 'p-3', // Increased padding and height
+        'border', 'border-gray-300', 'dark:border-gray-600',
+        'rounded-md', // Rounded corners
+        'font-mono', 'text-sm', 
+        'bg-gray-50', 'dark:bg-gray-800', 
+        'text-gray-900', 'dark:text-gray-200', 
+        'focus:outline-none', 'focus:ring-1', 'focus:ring-blue-500', 'focus:border-blue-500' // Focus styling
+    );
+    // Stringify everything EXCEPT the 'enabled' flag for the editor
+    content.value = JSON.stringify(_.omit(serverData, 'enabled'), null, 2);
+    content.dataset.serverKey = key; // Link content to the server key
+    // Listener added in displayMCPConfig using delegation
+
+    container.appendChild(header);
+    container.appendChild(content);
+
+    return container;
+}
+
+// Handle server renaming
+function handleServerRename(event) {
+    const newKey = event.target.value.trim();
+    const originalKey = event.target.dataset.originalKey;
+    const serverContainer = event.target.closest('.server-container');
+    // const contentTextarea = serverContainer.querySelector('.server-content');
+
+    if (!newKey || newKey === originalKey) {
+        event.target.value = originalKey; // Revert if empty or unchanged
+        return;
+    }
+
+    // Check for conflicts in the working configuration
+    if (currentConfig.mcpServers[newKey]) {
+        showToast(`Server name "${newKey}" already exists. Please choose a different name.`, 'error');
+        event.target.value = originalKey; // Revert
+        return;
+    }
+
+    // Update the key in the currentConfig
+    // Make sure to preserve the entire server object, including 'enabled' status
+    const serverData = _.cloneDeep(currentConfig.mcpServers[originalKey]);
+    currentConfig.mcpServers[newKey] = serverData;
+    delete currentConfig.mcpServers[originalKey];
+
+    // Update dataset attributes on the relevant elements
+    serverContainer.dataset.serverKey = newKey;
+    event.target.dataset.originalKey = newKey; // Update original key reference for the input itself
+    // Find other elements within this container that need their key updated
+    serverContainer.querySelectorAll(`[data-server-key="${originalKey}"]`).forEach(el => {
+        if (el !== event.target) { // Don't re-update the input that triggered the event
+             el.dataset.serverKey = newKey;
+        }
+    });
+    
+    console.log(`Server renamed locally from "${originalKey}" to "${newKey}"`);
+    showToast(`Server renamed to "${newKey}". Save changes to make permanent.`, 'info');
+    checkForChanges(); // Check if changes were made
+}
+
+
+// Handle input changes in textareas
+function handleInputChange(event) {
+    if (event.target.classList.contains('server-content')) {
+        const serverKey = event.target.dataset.serverKey;
+        if (!currentConfig.mcpServers[serverKey]) {
+            console.error(`Attempting to edit content for non-existent server key: ${serverKey}`);
+            showToast(`Error: Server data for ${serverKey} not found.`, 'error');
+            return;
+        }
+
+        try {
+            const updatedData = JSON.parse(event.target.value);
+            // Preserve the existing enabled status from currentConfig
+            const wasEnabled = currentConfig.mcpServers[serverKey]?.enabled || false;
+            // Update the server data, merging new content with the existing enabled status
+            currentConfig.mcpServers[serverKey] = { ...updatedData, enabled: wasEnabled };
+            // console.log(`Updated data for server: ${serverKey}`);
+            checkForChanges(); // Check if this change resulted in a difference from initial state
+        } catch (error) {
+            // Provide feedback but don't necessarily revert the text immediately
+            showToast(`Invalid JSON format for server ${serverKey}. Please correct the syntax.`, 'error');
+            // Optionally add a visual indicator to the textarea
+            event.target.classList.add('border-red-500'); 
+        }
+    } else if (event.target.classList.contains('server-title-input')) {
+        // Title changes are handled by handleServerRename on 'change' event
+    }
+}
+
+// Toggle server enabled state in currentConfig
+function toggleServerEnabled(serverKey, isEnabled) {
+    console.log(`Toggling server ${serverKey} to ${isEnabled ? 'enabled' : 'disabled'}`);
+    if (currentConfig.mcpServers && currentConfig.mcpServers[serverKey]) {
+        currentConfig.mcpServers[serverKey].enabled = isEnabled;
+        
+        // Also update allServersConfig to keep everything in sync
+        if (allServersConfig.mcpServers && allServersConfig.mcpServers[serverKey]) {
+            allServersConfig.mcpServers[serverKey].enabled = isEnabled;
+        }
+        
+        // Check for changes and update UI state
+        checkForChanges();
+        
+        // If we're toggling a server in client-specific mode, update the mcpServers object
+        if (currentLoadedClientId) {
+            if (mcpServers[serverKey]) {
+                mcpServers[serverKey].enabled = isEnabled;
+            }
+        }
+        
+        // Re-render the servers display to reflect the new state
+        displayMCPConfig();
+        
+        // Also update the renderServers view if it's being used
+        renderServers();
+    } else {
+        console.error(`Server ${serverKey} not found in current configuration`);
+    }
+}
+
+// Add a new MCP server to currentConfig
+function addMCPServer() {
+    // Ensure mcpServers object exists
+    if (!currentConfig.mcpServers) {
+        currentConfig.mcpServers = {};
+    }
+    
+    // Find a unique default key
+    let i = 1;
+    let newServerKey = `newServer${i}`;
+    while (currentConfig.mcpServers[newServerKey]) {
+        i++;
+        newServerKey = `newServer${i}`;
+    }
+
+    currentConfig.mcpServers[newServerKey] = { 
+        enabled: true, // New servers start enabled
+        description: "New Server",
+        server_type: "generic",
+        config: {
+            port: 8080,
+            api_key: "YOUR_API_KEY",
+            base_url: "http://localhost"
+        },
+        environment: {},
+        status: "unknown",
+        last_checked: null,
+        url: "http://localhost:8080", 
+        // Do NOT include the enabled flag within the editable JSON structure
+    };
+    console.log(`Added server ${newServerKey} locally`);
+    showToast(`Server "${newServerKey}" added. Edit details and save changes.`, 'success');
+    displayMCPConfig(); // Re-render the list with the new server
+    checkForChanges(); // Check for changes (adding always causes changes)
+
+    // Scroll to the new server and focus its title input
+    const newServerElement = document.querySelector(`.server-container[data-server-key="${newServerKey}"]`);
+    if (newServerElement) {
+        newServerElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const titleInput = newServerElement.querySelector('.server-title-input');
+        if (titleInput) {
+            titleInput.focus();
+            titleInput.select();
+        }
+    }
+}
+
+// Remove an MCP server from currentConfig
+function removeMCPServer(serverKey) {
+    if (currentConfig.mcpServers && currentConfig.mcpServers[serverKey]) {
+        // Confirm before removing (optional, but good UX for deletion)
+        // if (!confirm(`Are you sure you want to remove the server "${serverKey}"? This cannot be undone easily after saving.`)) {
+        //     return;
+        // }
+        
+        delete currentConfig.mcpServers[serverKey];
+        console.log(`Removed server ${serverKey} locally`);
+        showToast(`Server "${serverKey}" removed locally. Save changes to make permanent.`, 'success');
+        displayMCPConfig(); // Re-render the list
+        checkForChanges(); // Check if removal caused changes from initial state
+    } else {
+        showToast(`Error: Cannot remove server "${serverKey}", it was not found.`, 'error');
+        console.error(`Attempted to remove non-existent server: ${serverKey}`);
+    }
+}

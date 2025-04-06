@@ -914,4 +914,59 @@ body.shift-pressed .env-var-pair[data-sensitive="true"] .env-value,
     opacity: 1;
 }
 
+/* Floating Save/Reset Buttons */
+#floatingButtons {
+    /* Position is handled by Tailwind classes in HTML now */
+}
+
+#resetChangesBtn,
+#saveChangesBtn {
+    /* Common styles handled by Tailwind in HTML */
+    /* Ensure consistent sizing if needed beyond Tailwind */
+    /* Example: min-width: 100px; */
+}
+
+/* Specific overrides if necessary */
+#resetChangesBtn {
+     /* Tailwind handles red background, hover, focus */
+}
+
+#saveChangesBtn {
+     /* Tailwind handles blue background, hover, focus */
+}
+
+/* Ensure buttons have same height/padding via Tailwind */
+/* The classes py-2 px-6 rounded-lg shadow-md font-semibold */
+/* applied in index.html should provide consistency. */
+/* No additional CSS should be needed unless overriding Tailwind. */
+
 /* --- Presets --- */
+
+/* Config Mode Indicator */
+.config-mode-indicator {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    padding: 1rem;
+    margin-bottom: 1.5rem;
+    text-align: center;
+    display: block;
+    width: 100%;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.mode-title {
+    font-weight: bold;
+    margin-bottom: 0.5rem;
+    color: #343a40;
+}
+
+#currentConfigMode {
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.mode-description {
+    font-size: 0.9rem;
+    color: #6c757d;
+}

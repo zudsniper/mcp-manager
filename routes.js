@@ -7,6 +7,7 @@ import _ from 'lodash'; // Import lodash for deep comparison
 // Get __dirname equivalent in ES modules
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIGS_DIR = path.join(__dirname, 'configs'); // Directory for client-specific configs
+const MCP_SERVER_REGISTRY_PATH = path.join(__dirname, 'mcp_server_registry.json'); // Path for the server registry
 
 // Default settings
 let settings = {
@@ -31,6 +32,9 @@ const SETTINGS_PATH = path.join(__dirname, 'settings.json');
 const PRESETS_PATH = path.join(__dirname, 'presets.json'); // Path to presets file
 const CONFIG_PATH = path.join(__dirname, 'config.json'); // Main config file (used for sync mode or last loaded view)
 
+// Store the initially loaded active configuration for comparison
+let initialActiveConfig = { mcpServers: {} };
+
 // Ensure configs directory exists
 async function ensureConfigsDir() {
     try {
@@ -41,9 +45,26 @@ async function ensureConfigsDir() {
     }
 }
 
+// Ensure a JSON file exists, creating it with default content if not
+async function ensureJsonFile(filePath, defaultContent = {}) {
+    try {
+        await fs.access(filePath);
+        // Optionally, validate if it's valid JSON here
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            console.log(`${path.basename(filePath)} not found, creating with defaults.`);
+            await fs.writeFile(filePath, JSON.stringify(defaultContent, null, 2));
+        } else {
+            console.error(`Error accessing ${filePath}:`, error);
+            // Consider throwing the error or handling it differently
+        }
+    }
+}
+
 // Load settings on startup
 async function loadSettings() {
     try {
+        await ensureJsonFile(SETTINGS_PATH, settings); // Use ensureJsonFile
         const data = await fs.readFile(SETTINGS_PATH, 'utf8');
         settings = JSON.parse(data);
         console.log('Loaded settings:', settings);
@@ -70,43 +91,19 @@ async function loadSettings() {
         }
 
     } catch (error) {
-        if (error.code === 'ENOENT') {
-            console.error('settings.json not found, creating with defaults');
-            // Ensure client paths are set in defaults
-            const defaultPaths = getDefaultConfigPaths();
-            settings.clients.claude.configPath = defaultPaths.CLAUDE_CONFIG_PATH;
-            settings.clients.cursor.configPath = defaultPaths.CURSOR_CONFIG_PATH;
-            settings.syncClients = false; // Ensure syncClients is off by default
-
-            await fs.writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2));
-        } else {
-            console.error('Failed to load settings.json, using defaults:', error);
-            // Fallback to default settings might be needed here, ensure paths are set
-             const defaultPaths = getDefaultConfigPaths();
-             if (!settings.clients?.claude?.configPath) settings.clients.claude.configPath = defaultPaths.CLAUDE_CONFIG_PATH;
-             if (!settings.clients?.cursor?.configPath) settings.clients.cursor.configPath = defaultPaths.CURSOR_CONFIG_PATH;
-        }
+        // Handle potential JSON parse errors or other read errors
+         console.error('Failed to load or parse settings.json, using defaults:', error);
+         // Fallback to default settings might be needed here, ensure paths are set
+          const defaultPaths = getDefaultConfigPaths();
+          if (!settings.clients?.claude?.configPath) settings.clients.claude.configPath = defaultPaths.CLAUDE_CONFIG_PATH;
+          if (!settings.clients?.cursor?.configPath) settings.clients.cursor.configPath = defaultPaths.CURSOR_CONFIG_PATH;
+          settings.syncClients = false; // Ensure sync is off if settings fail
     }
 
-    // Ensure presets.json exists
-    try {
-        await fs.access(PRESETS_PATH);
-    } catch (error) {
-        if (error.code === 'ENOENT') {
-            console.log('presets.json not found, creating with default preset');
-            await fs.writeFile(PRESETS_PATH, JSON.stringify({ "Default": {} }, null, 2));
-        }
-    }
-
-    // Ensure config.json exists
-    try {
-        await fs.access(CONFIG_PATH);
-    } catch (error) {
-        if (error.code === 'ENOENT') {
-            console.log('config.json not found, creating empty config');
-            await fs.writeFile(CONFIG_PATH, JSON.stringify({ "mcpServers": {} }, null, 2));
-        }
-    }
+    // Ensure other essential files exist
+    await ensureJsonFile(PRESETS_PATH, { "Default": {} });
+    await ensureJsonFile(CONFIG_PATH, { "mcpServers": {} });
+    await ensureJsonFile(MCP_SERVER_REGISTRY_PATH, { "mcpServers": {} }); // Ensure registry file exists
 
     // Ensure configs directory exists
     await ensureConfigsDir();
@@ -161,106 +158,82 @@ function getEnabledClientConfigPaths() {
 }
 
 // Helper function to read config files - respects syncClients setting
-async function readManagedConfigFile(clientId = null) {
-    let filePath;
+async function readManagedConfigFile(clientId = null, filePathOverride = null) {
+    let filePath = filePathOverride;
     let configSource = 'unknown'; // For logging
+    let isClientSpecific = false;
 
-    try { // Outer try for overall operation
+    if (!filePath) { // Determine filePath if not overridden
         if (!settings.syncClients && clientId) {
             // Sync OFF: Try reading the client-specific config first
             filePath = getClientSpecificConfigPath(clientId);
             configSource = `client-specific (${filePath})`;
-            try {
-                const data = await fs.readFile(filePath, 'utf8');
-                console.log(`Reading config for client '${clientId}' from ${configSource}`);
-                try {
-                     return JSON.parse(data);
-                } catch (parseError) {
-                     console.error(`Error parsing JSON from client-specific file ${filePath}:`, parseError);
-                     throw new Error(`Invalid JSON in client-specific file: ${filePath}`);
-                }
-            } catch (error) {
-                if (error.code === 'ENOENT') {
-                    console.log(`No client-specific config found at ${filePath}. Falling back to original.`);
-                    // Fallback: Read the original client config file
-                    const originalPath = getClientConfigPath(clientId);
-                    if (!originalPath) {
-                        console.error(`No original config path defined for client ${clientId}`);
-                        return { mcpServers: {} }; // Return empty if no path
-                    }
-                    filePath = originalPath;
-                    configSource = `original client (${filePath})`;
-                    try {
-                        const originalData = await fs.readFile(filePath, 'utf8');
-                        let config;
-                        try {
-                            config = JSON.parse(originalData);
-                        } catch (parseError) {
-                             console.error(`Error parsing JSON from original file ${filePath}:`, parseError);
-                             throw new Error(`Invalid JSON in original file: ${filePath}`);
-                        }
-
-                        // IMPORTANT: Save a copy to the client-specific path for future reads
-                        const clientSpecificPath = getClientSpecificConfigPath(clientId);
-                        try {
-                            await fs.writeFile(clientSpecificPath, JSON.stringify(config, null, 2));
-                            console.log(`Saved initial client-specific config to ${clientSpecificPath}`);
-                        } catch (writeError) {
-                            console.error(`Failed to write initial client-specific config to ${clientSpecificPath}:`, writeError);
-                            // Continue returning the original data even if write fails
-                        }
-                        console.log(`Reading config for client '${clientId}' from ${configSource} (and copied to client-specific)`);
-                        return config;
-                    } catch (originalError) {
-                        if (originalError.code === 'ENOENT') {
-                            console.log(`Original config file ${filePath} not found for client ${clientId}. Using empty config.`);
-                            // Also write an empty config to the client-specific path?
-                            const clientSpecificPath = getClientSpecificConfigPath(clientId);
-                            try {
-                                await fs.writeFile(clientSpecificPath, JSON.stringify({ mcpServers: {} }, null, 2));
-                                console.log(`Created empty client-specific config at ${clientSpecificPath}`);
-                            } catch (writeError) {
-                                console.error(`Failed to write empty client-specific config to ${clientSpecificPath}:`, writeError);
-                            }
-                            return { mcpServers: {} };
-                        }
-                        console.error(`Error reading original config ${filePath}:`, originalError);
-                        throw originalError; // Rethrow other read errors
-                    }
-                } else {
-                    // Other error reading client-specific file
-                    console.error(`Error reading client-specific config ${filePath}:`, error);
-                    throw error;
-                }
-            }
+            isClientSpecific = true;
         } else {
-            // Sync ON or no clientId: Read from main config.json
+            // Sync ON or no specific client: Use the main config file
             filePath = CONFIG_PATH;
             configSource = `main config (${filePath})`;
-            try {
-                console.log(`Reading config from ${configSource}`);
-                const data = await fs.readFile(filePath, 'utf8');
-                try {
-                    return JSON.parse(data);
-                 } catch (parseError) {
-                     console.error(`Error parsing JSON from main config file ${filePath}:`, parseError);
-                     throw new Error(`Invalid JSON in main config file: ${filePath}`);
-                 }
-            } catch (error) {
-                if (error.code === 'ENOENT') {
-                    console.log(`Main config file ${filePath} not found. Using empty config.`);
-                    return { mcpServers: {} };
-                }
-                console.error(`Error reading main config ${filePath}:`, error);
-                throw error; // Rethrow other read errors
-            }
         }
-    } catch (operationError) {
-         console.error(`Failed to manage/read config file for client ${clientId || 'main'}:`, operationError);
-         // Instead of throwing, return an error structure or empty config?
-         // Throwing will cause a 500, let's throw a specific error maybe?
-         // For now, rethrow to ensure the endpoint catches it.
-         throw operationError;
+    } else {
+        configSource = `override (${filePath})`; // If path was provided
+    }
+
+
+    try {
+        const data = await fs.readFile(filePath, 'utf8');
+        console.log(`Reading active config from ${configSource}`);
+        try {
+            return JSON.parse(data);
+        } catch (parseError) {
+            console.error(`Error parsing JSON from ${configSource}:`, parseError);
+            throw new Error(`Invalid JSON in active config file: ${filePath}`);
+        }
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            console.log(`Active config file not found at ${filePath}.`);
+            if (isClientSpecific) {
+                 // Fallback: Try reading the original client config file if client-specific failed
+                 const originalPath = getClientConfigPath(clientId);
+                 if (!originalPath) {
+                     console.error(`No original config path defined for client ${clientId}. Returning empty config.`);
+                     return { mcpServers: {} }; // Return empty if no path
+                 }
+                 console.log(`Falling back to original client config: ${originalPath}`);
+                 return readManagedConfigFile(clientId, originalPath); // Recursive call with override
+            } else {
+                 // If main config or original client config not found, return empty
+                 console.log(`Returning empty config for ${filePath}`);
+                 return { mcpServers: {} };
+            }
+        } else {
+            console.error(`Failed to read active config file ${filePath}:`, error);
+            return { mcpServers: {} }; // Return empty config on other errors
+        }
+    }
+}
+
+// Helper function to read the server registry
+async function readServerRegistry() {
+    try {
+        const data = await fs.readFile(MCP_SERVER_REGISTRY_PATH, 'utf8');
+        return JSON.parse(data);
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            console.log('Server registry not found, returning empty.');
+            return { mcpServers: {} };
+        }
+        console.error('Failed to read or parse server registry:', error);
+        return { mcpServers: {} }; // Return empty/default on error
+    }
+}
+
+// Helper function to write the server registry
+async function writeServerRegistry(registryData) {
+    try {
+        await fs.writeFile(MCP_SERVER_REGISTRY_PATH, JSON.stringify(registryData, null, 2));
+        console.log('Server registry updated.');
+    } catch (error) {
+        console.error('Failed to write server registry:', error);
     }
 }
 
@@ -380,22 +353,29 @@ async function getFileMetadata(filePath) {
 
 // Helper function to compare configurations (deep comparison)
 function compareConfigs(config1, config2) {
-    // Use lodash's isEqual for deep comparison
-    // Ensure mcpServers exists in both, defaulting to empty object
-    const servers1 = config1?.mcpServers || {};
-    const servers2 = config2?.mcpServers || {};
-    return _.isEqual(servers1, servers2);
+    // Normalize undefined/null mcpServers to empty objects for comparison
+    const servers1 = config1?.mcpServers ?? {};
+    const servers2 = config2?.mcpServers ?? {};
+
+    // console.log("Comparing Config 1:", JSON.stringify(servers1, null, 2)); // Debug
+    // console.log("Comparing Config 2:", JSON.stringify(servers2, null, 2)); // Debug
+
+
+    // Use lodash for deep comparison
+    const areEqual = _.isEqual(servers1, servers2);
+    // console.log("Are configs equal?", areEqual); // Debug
+    return areEqual;
 }
 
 // Endpoint to fetch current settings
-router.get('/settings', (req, res) => {
+router.get('/api/settings', (req, res) => {
     console.log('GET /api/settings');
     // Return a copy to prevent accidental modification
     res.json({ ...settings });
 });
 
 // Endpoint to update settings
-router.post('/settings', async (req, res) => {
+router.post('/api/settings', async (req, res) => {
     console.log('POST /api/settings with data:', req.body);
     const newSettings = req.body;
     // Basic validation
@@ -426,7 +406,7 @@ router.post('/settings', async (req, res) => {
 
 
 // Endpoint to fetch client list and their status
-router.get('/clients', async (req, res) => {
+router.get('/api/clients', async (req, res) => {
     console.log('GET /api/clients');
     const clientData = {};
     for (const [id, client] of Object.entries(settings.clients)) {
@@ -460,214 +440,217 @@ router.get('/clients', async (req, res) => {
 });
 
 
-// Endpoint to fetch configuration (main or client-specific)
-router.get('/config/:clientId?', async (req, res) => {
+// GET MCP config
+router.get('/api/config', async (req, res) => {
+    const clientId = req.query.clientId; // Get clientId if provided (for non-sync mode)
+    console.log(`GET /api/config - Client ID: ${clientId}, Sync Mode: ${settings.syncClients}`);
+
+    try {
+        // 1. Read the full server registry
+        const serverRegistry = await readServerRegistry();
+
+        // 2. Read the currently active configuration file
+        const activeConfig = await readManagedConfigFile(clientId);
+        // Store the initial state for comparison, only the mcpServers part
+        initialActiveConfig = { mcpServers: _.cloneDeep(activeConfig.mcpServers || {}) }; 
+
+        // 3. Merge active state into the registry data
+        const combinedConfig = _.cloneDeep(serverRegistry); // Start with registry content
+        if (!combinedConfig.mcpServers || typeof combinedConfig.mcpServers !== 'object') {
+            console.warn("Registry mcpServers format is invalid or missing. Initializing.");
+            combinedConfig.mcpServers = {}; // Ensure it's an object
+        }
+        
+        // Ensure all servers in the registry have an 'enabled' flag (default to false)
+        Object.values(combinedConfig.mcpServers).forEach(server => {
+            server.enabled = false; 
+        });
+
+        // Mark servers present in the active config as enabled and update registry if needed
+        if (activeConfig.mcpServers && typeof activeConfig.mcpServers === 'object') {
+            Object.entries(activeConfig.mcpServers).forEach(([serverKey, activeServerData]) => {
+                if (combinedConfig.mcpServers[serverKey]) {
+                    // Server exists in registry, mark as enabled
+                    combinedConfig.mcpServers[serverKey].enabled = true;
+                    // Optional: Update registry entry details from active config?
+                    // Let's overwrite registry details with active ones IF they differ significantly, 
+                    // but prioritize just setting the enabled flag.
+                    // For now, simple enable flag setting.
+                } else {
+                    // Server exists in active config but not registry? Add it to the combined view.
+                    console.warn(`Server '${serverKey}' found in active config but not in registry. Adding to combined view.`);
+                    combinedConfig.mcpServers[serverKey] = { ...activeServerData, enabled: true };
+                    // We should probably add this to the actual registry file on save (POST)
+                }
+            });
+        }
+        
+        // Log the initial active config for debugging comparison issues
+        console.log("Initial active config stored:", JSON.stringify(initialActiveConfig.mcpServers || {}, null, 2));
+
+        res.json(combinedConfig); // Return the combined view
+    } catch (error) {
+        console.error("Error fetching combined config:", error);
+        res.status(500).send(`Failed to get configuration: ${error.message}`);
+    }
+});
+
+// GET client-specific MCP config
+router.get('/api/config/:clientId', async (req, res) => {
     const clientId = req.params.clientId;
-    console.log(`GET /api/config/${clientId || ''} (syncClients: ${settings.syncClients})`);
-    try {
-        const config = await readManagedConfigFile(clientId);
+    console.log(`GET /api/config/${clientId}`);
 
-        // Update main config.json to reflect the last loaded config (for editor consistency)
-        try {
-            await fs.writeFile(CONFIG_PATH, JSON.stringify(config, null, 2));
-            console.log(`Updated main config.json with content from last loaded config.`);
-        } catch(writeError) {
-            console.error(`Failed to update main config.json after loading:`, writeError);
-            // Non-fatal, continue request
+    try {
+        // 1. Read the full server registry
+        const serverRegistry = await readServerRegistry();
+
+        // 2. Read the client-specific configuration file
+        const activeConfig = await readManagedConfigFile(clientId);
+        
+        // 3. Merge active state into the registry data
+        const combinedConfig = _.cloneDeep(serverRegistry); // Start with registry content
+        if (!combinedConfig.mcpServers || typeof combinedConfig.mcpServers !== 'object') {
+            console.warn("Registry mcpServers format is invalid or missing. Initializing.");
+            combinedConfig.mcpServers = {}; // Ensure it's an object
+        }
+        
+        // Ensure all servers in the registry have an 'enabled' flag (default to false)
+        Object.values(combinedConfig.mcpServers).forEach(server => {
+            server.enabled = false; 
+        });
+
+        // Mark servers present in the active config as enabled and update registry if needed
+        if (activeConfig.mcpServers && typeof activeConfig.mcpServers === 'object') {
+            Object.entries(activeConfig.mcpServers).forEach(([serverKey, activeServerData]) => {
+                if (combinedConfig.mcpServers[serverKey]) {
+                    // Server exists in registry, mark as enabled
+                    combinedConfig.mcpServers[serverKey].enabled = true;
+                } else {
+                    // Server exists in active config but not registry? Add it to the combined view.
+                    console.warn(`Server '${serverKey}' found in active config but not in registry. Adding to combined view.`);
+                    combinedConfig.mcpServers[serverKey] = { ...activeServerData, enabled: true };
+                }
+            });
         }
 
-        res.json(config);
+        res.json(combinedConfig); // Return the combined view
     } catch (error) {
-        console.error(`Error fetching config for ${clientId || 'main'}:`, error);
-        // Send a more specific error message if possible
-        const errorMessage = error.message || 'Failed to read configuration';
-        res.status(500).json({ error: errorMessage });
+        console.error(`Error fetching config for client ${clientId}:`, error);
+        res.status(500).json({ error: `Failed to get configuration: ${error.message}` });
     }
 });
 
+// POST MCP config - Updates registry AND active config file
+router.post('/api/config', async (req, res) => {
+    const receivedConfig = req.body; // This should contain the FULL config from the client (with enabled flags)
+    const clientId = req.query.clientId;
+    console.log(`POST /api/config - Client ID: ${clientId}, Sync Mode: ${settings.syncClients}`);
+    // console.log("Received config data:", JSON.stringify(receivedConfig, null, 2)); // Debugging
 
-// Endpoint to save configurations
-router.post('/save-configs', async (req, res) => {
-    const { configData, targetClients } = req.body; // targetClients is an array of client IDs
-    console.log('POST /api/save-configs');
-    console.log(`Sync Mode: ${settings.syncClients}`);
-    console.log('Target Clients:', targetClients);
-    // console.log('Config Data:', JSON.stringify(configData, null, 2)); // Potentially very large
-
-
-    if (!configData || typeof configData !== 'object') {
-        return res.status(400).json({ error: 'Invalid configuration data format.' });
+    if (!receivedConfig || typeof receivedConfig.mcpServers !== 'object') {
+        return res.status(400).send('Invalid configuration data format received.');
     }
-     if (!Array.isArray(targetClients)) {
-        return res.status(400).json({ error: 'Invalid targetClients format. Expected an array.' });
-    }
-
 
     try {
-        if (settings.syncClients) {
-            // Sync ON: Save to main config.json and all enabled original client files
-            console.log('Sync ON: Saving to main config and enabled original client files');
+        // 1. Update the Server Registry
+        const serverRegistry = await readServerRegistry();
+        if (!serverRegistry.mcpServers) serverRegistry.mcpServers = {};
 
-            // 1. Save to main config.json
-            await createBackup(CONFIG_PATH);
-            await fs.writeFile(CONFIG_PATH, JSON.stringify(configData, null, 2));
-            console.log(`Saved main config to ${CONFIG_PATH}`);
+        Object.entries(receivedConfig.mcpServers).forEach(([key, serverDataFromClient]) => {
+             // Add or update the server in the registry
+             // Remove the 'enabled' flag before saving to registry
+             const { enabled, ...serverDetailsToSave } = serverDataFromClient;
+             serverRegistry.mcpServers[key] = serverDetailsToSave; 
+             // console.log(`Updating registry for ${key}:`, serverDetailsToSave); // Debug
+        });
+        await writeServerRegistry(serverRegistry);
 
-            // 2. Save to original config files of enabled clients
-            const savePromises = Object.entries(settings.clients)
-                .filter(([id, client]) => client.enabled && client.configPath)
-                .map(async ([id, client]) => {
-                    try {
-                        await createBackup(client.configPath);
-                        await fs.writeFile(client.configPath, JSON.stringify(configData, null, 2));
-                        console.log(`Saved synced config to ${client.name} (${client.configPath})`);
-                    } catch (err) {
-                        console.error(`Failed to save synced config for ${client.name} (${client.configPath}):`, err);
-                        // Decide if one failure should abort all? For now, log and continue.
-                        // We could collect errors and return them.
-                        throw new Error(`Failed to save to ${client.name}: ${err.message}`); // Propagate error
-                    }
-                });
-             await Promise.all(savePromises);
+        // 2. Prepare the configuration to be saved to the active file (only enabled servers)
+        const activeConfigToSave = { mcpServers: {} };
+        Object.entries(receivedConfig.mcpServers).forEach(([key, serverDataFromClient]) => {
+            if (serverDataFromClient.enabled === true) {
+                // Only include enabled servers in the active config file
+                const { enabled, ...serverDetailsToSave } = serverDataFromClient; // Remove transient 'enabled' flag
+                activeConfigToSave.mcpServers[key] = serverDetailsToSave;
+            }
+        });
 
-
+        // 3. Determine the target file path for the active config
+        let targetPath;
+        let targetDescription;
+         if (!settings.syncClients && clientId) {
+            // Sync OFF: Save to client-specific config file in ./configs/
+            targetPath = getClientSpecificConfigPath(clientId);
+            targetDescription = `client-specific config (${targetPath})`;
+            // We also need to write to the ORIGINAL client path if it exists and client is enabled?
+            // Let's simplify: When sync is OFF, we ONLY manage the ./configs/<client>.json file.
+            // The original files become read-only sources unless explicitly synced.
         } else {
-            // Sync OFF: Save ONLY to the target client's specific config file
-            if (targetClients.length !== 1) {
-                 console.error(`Sync OFF: Expected exactly one target client, but got ${targetClients.length}`, targetClients);
-                 return res.status(400).json({ error: 'In non-sync mode, exactly one target client must be specified.' });
-            }
-            const clientId = targetClients[0];
-            const client = settings.clients[clientId];
-
-            if (!client) {
-                 console.error(`Sync OFF: Invalid client ID provided: ${clientId}`);
-                 return res.status(400).json({ error: `Invalid client ID: ${clientId}` });
-            }
-
-            const clientSpecificPath = getClientSpecificConfigPath(clientId);
-            console.log(`Sync OFF: Saving config for client '${clientId}' to ${clientSpecificPath}`);
-
-            await createBackup(clientSpecificPath);
-            await fs.writeFile(clientSpecificPath, JSON.stringify(configData, null, 2));
-             console.log(`Saved client-specific config for ${clientId} to ${clientSpecificPath}`);
-
-            // Also update the main config.json to reflect this last save?
-            // Let's do this for consistency with the read logic.
-            try {
-                await createBackup(CONFIG_PATH); // Backup main config too
-                await fs.writeFile(CONFIG_PATH, JSON.stringify(configData, null, 2));
-                 console.log(`Updated main config.json to reflect last saved client '${clientId}'.`);
-            } catch(writeError) {
-                 console.error(`Failed to update main config.json after saving client-specific config:`, writeError);
-                 // Non-fatal, continue request
-            }
+            // Sync ON: Save to main config file
+            targetPath = CONFIG_PATH;
+            targetDescription = `main config (${targetPath})`;
         }
 
-        res.json({ success: true, message: 'Configurations saved successfully.' });
+        // 4. Create backup and save the active configuration file
+        if (targetPath) {
+            await createBackup(targetPath); // Backup before overwriting
+            await fs.writeFile(targetPath, JSON.stringify(activeConfigToSave, null, 2));
+            console.log(`Configuration saved successfully to ${targetDescription}`);
 
-    } catch (error) {
-        console.error('Error saving configurations:', error);
-        res.status(500).json({ error: `Failed to save configurations: ${error.message}` });
-    }
-});
-
-// Endpoint to reset configuration
-// If sync is ON, resets main config (and optionally syncs to clients?) from first enabled client's original file.
-// If sync is OFF, resets the specified client's config from their original file.
-router.post('/reset-config', async (req, res) => {
-    const { clientId } = req.body; // Optional: client ID for non-sync mode reset
-    console.log('POST /api/reset-config');
-    console.log(`Sync Mode: ${settings.syncClients}`);
-    console.log(`Target Client (if sync off): ${clientId}`);
-
-    try {
-        if (settings.syncClients) {
-            // Sync ON: Reset main config.json from the first enabled client's *original* config
-             console.log("Sync ON: Resetting main config.json from first enabled client's original config.");
-            const firstEnabledClient = Object.entries(settings.clients).find(([id, client]) => client.enabled && client.configPath);
-
-            if (!firstEnabledClient) {
-                return res.status(400).json({ error: 'Cannot reset: No enabled clients with a valid config path found.' });
-            }
-
-            const [id, client] = firstEnabledClient;
-            const originalPath = client.configPath;
-            console.log(`Resetting from original config of client '${id}': ${originalPath}`);
-
-            let originalConfig;
-            try {
-                originalConfig = await readConfigFile(originalPath); // Use the simple reader here
-            } catch(readError) {
-                 if (readError.code === 'ENOENT') {
-                     console.log(`Original config file not found at ${originalPath}. Resetting to empty.`);
-                     originalConfig = { mcpServers: {} };
-                 } else {
-                     throw readError; // Rethrow other read errors
+             // If sync is ON, also update all *enabled* original client config files
+             if (settings.syncClients) {
+                 console.log("Sync is ON: Propagating changes to enabled client original configs...");
+                 const enabledClientPaths = getEnabledClientConfigPaths(); // Gets original paths
+                 for (const clientPath of enabledClientPaths) {
+                     // Ensure clientPath is valid and not the same as the main config path we just wrote
+                     if (clientPath && clientPath !== CONFIG_PATH) { 
+                         try {
+                             await createBackup(clientPath); // Backup client file
+                             await fs.writeFile(clientPath, JSON.stringify(activeConfigToSave, null, 2));
+                             console.log(`Synced configuration to original client path: ${clientPath}`);
+                         } catch (syncError) {
+                             console.error(`Failed to sync configuration to ${clientPath}:`, syncError);
+                             // Log error but continue trying others
+                         }
+                     }
                  }
-            }
-
-
-            await createBackup(CONFIG_PATH);
-            await fs.writeFile(CONFIG_PATH, JSON.stringify(originalConfig, null, 2));
-            console.log(`Main config.json reset successfully from ${originalPath}`);
-
-            // Optionally: Force push this reset config to all other enabled clients?
-            // Let's NOT do this automatically for now. Resetting main should be enough. User can save to sync later.
-
-            res.json({ success: true, message: 'Main configuration reset successfully.', resetConfig: originalConfig });
-
-        } else {
-            // Sync OFF: Reset the specified client's specific config from their original file
-            if (!clientId || !settings.clients[clientId]) {
-                return res.status(400).json({ error: 'Client ID is required for reset in non-sync mode.' });
-            }
-
-            const client = settings.clients[clientId];
-            const originalPath = client.configPath;
-            const clientSpecificPath = getClientSpecificConfigPath(clientId);
-
-            if (!originalPath) {
-                 return res.status(400).json({ error: `Cannot reset: No original config path defined for client ${clientId}.` });
-            }
-
-            console.log(`Sync OFF: Resetting client '${clientId}' specific config (${clientSpecificPath}) from original (${originalPath})`);
-
-            let originalConfig;
-             try {
-                originalConfig = await readConfigFile(originalPath); // Simple reader for original
-            } catch(readError) {
-                 if (readError.code === 'ENOENT') {
-                     console.log(`Original config file not found at ${originalPath}. Resetting client-specific config to empty.`);
-                     originalConfig = { mcpServers: {} };
-                 } else {
-                     throw readError; // Rethrow other read errors
-                 }
-            }
-
-
-            await createBackup(clientSpecificPath);
-            await fs.writeFile(clientSpecificPath, JSON.stringify(originalConfig, null, 2));
-            console.log(`Client-specific config for '${clientId}' reset successfully from ${originalPath}`);
-
-             // Also update main config.json to reflect this reset? Yes, for consistency.
-             try {
-                 await createBackup(CONFIG_PATH);
-                 await fs.writeFile(CONFIG_PATH, JSON.stringify(originalConfig, null, 2));
-                 console.log(`Updated main config.json to reflect reset of client '${clientId}'.`);
-             } catch(writeError) {
-                 console.error(`Failed to update main config.json after resetting client-specific config:`, writeError);
-                 // Non-fatal
              }
 
-            res.json({ success: true, message: `Configuration for ${client.name} reset successfully.`, resetConfig: originalConfig });
+             // Update the initial state for future comparisons after successful save
+             // Store only the mcpServers part
+             initialActiveConfig = { mcpServers: _.cloneDeep(activeConfigToSave.mcpServers || {}) }; 
+             console.log("Updated initial active config after save:", JSON.stringify(initialActiveConfig.mcpServers || {}, null, 2));
+
+             res.send('Configuration saved successfully.');
+
+        } else {
+             console.error("Could not determine target path for saving configuration.");
+             res.status(500).send("Internal error: Could not determine save location.");
         }
 
     } catch (error) {
-        console.error('Error resetting configuration:', error);
-        res.status(500).json({ error: `Failed to reset configuration: ${error.message}` });
+        console.error('Failed to save configuration:', error);
+        res.status(500).send(`Failed to save configuration: ${error.message}`);
     }
 });
+
+// GET initial config state (used by client to compare for Reset)
+// This should return the state as it was when GET /api/config was last called
+router.get('/api/config/initial', (req, res) => {
+    console.log("GET /api/config/initial - Returning stored initial state");
+    // console.log("Initial state being returned:", JSON.stringify(initialActiveConfig || { mcpServers: {} }, null, 2));
+    res.json(initialActiveConfig || { mcpServers: {} }); // Return the stored initial state
+});
+
+
+// Endpoint to check if current config differs from initial state
+// This was previously here, but diff checking is better handled client-side.
+// Remove or comment out if unused.
+/*
+router.get('/api/config/differs', (req, res) => {
+     res.status(404).send("Diff checking is handled client-side.");
+});
+*/
 
 
 // Endpoint to get presets
