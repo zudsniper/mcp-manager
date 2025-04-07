@@ -123,17 +123,27 @@ h1 {
 /* Server Grid */
 .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    grid-template-columns: repeat(3, 1fr);
     gap: 1.5rem;
     margin-bottom: 2rem;
+    width: 100%;
 }
 
 /* Server Cards */
 .server-card {
     background-color: var(--card-bg);
     border-radius: 8px;
-    padding: 1.5rem;
+    padding: 1rem;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    margin-bottom: 0.5rem;
+    transition: transform 0.2s, box-shadow 0.2s;
+    display: flex;
+    flex-direction: column;
+}
+
+.server-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
 }
 
 .server-header {
@@ -277,22 +287,16 @@ input:checked + .slider:before {
     background-color: var(--primary-hover);
 }
 
-/* Responsive Design */
-@media (max-width: 768px) {
-    .container {
-        padding: 1rem;
+/* Responsive adjustments */
+@media (max-width: 1200px) {
+    .grid {
+        grid-template-columns: repeat(2, 1fr);
     }
+}
 
+@media (max-width: 768px) {
     .grid {
         grid-template-columns: 1fr;
-    }
-
-    .tools-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .server-card {
-        padding: 1rem;
     }
 }
 
@@ -571,8 +575,8 @@ input:checked + .slider:before {
 }
 
 .client-item.active {
-    border-color: var(--primary-color);
-    background-color: rgba(33, 150, 243, 0.1);
+    background-color: #e3f2fd;
+    border-left: 4px solid #2196f3;
 }
 
 .client-item .client-name {
@@ -619,15 +623,20 @@ input:checked + .slider:before {
 }
 
 .add-client-button {
-    width: 100%;
-    padding: 10px;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
     background-color: var(--accent-color);
-    color: white;
-    border: none;
-    border-radius: 4px;
+    color: black;
+    font-size: 24px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    margin: 10px auto;
     cursor: pointer;
-    font-weight: bold;
-    margin-top: 10px;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
 }
 
 .add-client-button:hover {
@@ -1171,8 +1180,8 @@ body.shift-pressed .env-var-pair[data-sensitive="true"] .env-value,
 }
 
 .client-item.active {
-    background-color: #f0f4c3;
-    border-left: 4px solid #827717;
+    background-color: #e3f2fd;
+    border-left: 4px solid #2196f3;
 }
 
 /* Shake animation for modals */
@@ -1387,7 +1396,7 @@ body.shift-pressed .env-var-pair[data-sensitive="true"] .env-value,
     height: 40px;
     border-radius: 50%;
     background-color: var(--accent-color);
-    color: white;
+    color: black;
     font-size: 24px;
     line-height: 1;
     display: flex;

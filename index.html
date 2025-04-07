@@ -9,6 +9,46 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.34.1/min/vs/loader.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
+    <style>
+      /* Truncate long server names within the header */
+      .server-header .server-name {
+        display: inline-block;
+        max-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: middle;
+      }
+
+      /* Environment variable pair styling: truncate text by default */
+      .env-var-pair {
+        display: inline-block;
+        max-width: 150px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: middle;
+        transition: all 0.3s ease;
+        margin-right: 5px;
+      }
+
+      /* On hover, expand env var name/value to show full text */
+      .env-var-pair:hover {
+        white-space: normal;
+        background: #f9f9f9;
+        z-index: 10;
+        position: relative;
+        padding: 2px;
+      }
+
+      /* Optional: style the key and value separately */
+      .env-key {
+        font-weight: bold;
+      }
+      .env-value {
+        margin-left: 2px;
+      }
+    </style>
 </head>
 <body>
     <div class="container">
@@ -288,5 +328,3 @@
     <script src="app.js"></script>
 </body>
 </html>
-
-

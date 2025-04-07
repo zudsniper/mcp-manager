@@ -285,7 +285,7 @@ function renderServers() {
     
     // Container for server cards
     const grid = document.createElement('div');
-    grid.className = 'content-grid';
+    grid.className = 'grid'; // Changed from 'servers-grid' to match styles.css
 
     // Get server names and sort them alphabetically
     const serverNames = Object.keys(mcpServers);
@@ -330,12 +330,11 @@ function renderServers() {
             displayCommand = fullCommand.substring(0, maxCommandLength) + '...';
         }
 
-        card.innerHTML = `
-            <div class="server-header">
-                <div>
-                    <span class="server-name">${serverName}</span>
-                    ${sourceText}
-                </div>
+        // Create the server actions based on mode
+        let serverActions = '';
+        if (isServersMode) {
+            // In Server Configuration mode, show edit/delete buttons
+            serverActions = `
                 <div class="server-actions">
                     <button class="icon-button edit-button" title="Edit Server" onclick="openServerConfig('${serverName}')">
                         <i class="fas fa-edit"></i>
@@ -344,6 +343,27 @@ function renderServers() {
                         <i class="fas fa-times"></i>
                     </button>
                 </div>
+            `;
+        } else {
+            // In Client mode, show toggle switch
+            const isEnabled = serverData.enabled ? 'checked' : '';
+            serverActions = `
+                <div class="server-actions">
+                    <label class="toggle-switch" title="Enable/Disable Server">
+                        <input type="checkbox" ${isEnabled} onchange="toggleServerEnabled('${serverName}', this.checked)">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+            `;
+        }
+
+        card.innerHTML = `
+            <div class="server-header">
+                <div>
+                    <span class="server-name">${serverName}</span>
+                    ${sourceText}
+                </div>
+                ${serverActions}
             </div>
             <div class="server-path" title="${fullCommand}">Command: ${displayCommand}</div>
             <div class="env-vars">
@@ -448,10 +468,9 @@ function showView(view, clickedTab) {
     document.querySelectorAll('.view').forEach(v => v.style.display = 'none'); // Hide all views
     const targetView = document.getElementById(view + 'View');
     if (targetView) {
-        // Use appropriate display type (grid for servers, block for others)
-        targetView.style.display = (view === 'servers') ? 'grid' : 'block';
+        targetView.style.display = 'block';
     } else {
-        console.error('View not found:', view + 'View');
+        console.warn(`View ${view} not found`);
     }
     
     // Update top add server button visibility - only show in servers view AND in serversMode
@@ -514,7 +533,7 @@ function closeModal(modalId) {
         
         // Show warning
         showWarning('Please save or reset your changes before closing');
-        
+            
         // Remove shake class after animation completes
         setTimeout(() => {
             const content = modal.querySelector('.modal-content');
@@ -1497,16 +1516,10 @@ async function initializeApp() {
     await loadAppSettings(); // Load settings first
     renderClientSidebar(); // Render sidebar based on loaded settings
     
-    // Set default state to servers mode
-    isServersMode = true;
+    // Explicitly select servers mode on startup
+    selectServersMode();
     
-    // Load the initial configuration
-    await loadInitialConfiguration(lastLoadedClientId);
-    
-    // Update UI to reflect correct state
-    updateConfigModeIndicator();
-    renderServers();
-
+    // Load presets
     await loadPresetsList();
 
     // Setup listeners for save/reset buttons
@@ -1694,6 +1707,27 @@ async function loadInitialConfiguration(clientId = null) {
             throw new Error(`Failed to parse server response: ${parseError.message}`);
         }
         
+        // Check if the config is empty and we need to auto-populate from clients
+        if (!combinedServerState || !combinedServerState.mcpServers || Object.keys(combinedServerState.mcpServers).length === 0) {
+            console.log("Empty configuration detected, attempting to auto-populate from clients...");
+            showToast("Empty configuration detected, automatically populating from available clients...", "info");
+            
+            // Auto-populate from clients
+            await aggregateClientConfigs();
+            
+            // After aggregation, try to fetch the updated config
+            const refreshResponse = await fetch(url);
+            if (refreshResponse.ok) {
+                const refreshedText = await refreshResponse.text();
+                try {
+                    combinedServerState = JSON.parse(refreshedText);
+                    console.log("Successfully loaded aggregated configuration from clients");
+                } catch (parseError) {
+                    console.error("Failed to parse refreshed config:", parseError);
+                }
+            }
+        }
+        
         // 1. Store the full state including enabled flags
         allServersConfig = combinedServerState || { mcpServers: {} }; 
 
@@ -1731,6 +1765,105 @@ async function loadInitialConfiguration(clientId = null) {
         updateFloatingButtonsVisibility(); // Ensure buttons hidden
     } finally {
         showLoadingIndicator(false); // Correct function call
+    }
+}
+
+// New function to aggregate configurations from all available clients
+async function aggregateClientConfigs() {
+    try {
+        // First, get the list of clients
+        const clientsResponse = await fetch(API.CLIENTS);
+        if (!clientsResponse.ok) {
+            throw new Error(`Failed to fetch clients: ${clientsResponse.statusText}`);
+        }
+        
+        const clientsData = await clientsResponse.json();
+        const availableClients = clientsData?.clients || {};
+        
+        // Prepare an aggregated config object
+        const aggregatedConfig = { mcpServers: {} };
+        
+        // For each enabled client, try to fetch its configuration
+        const clientFetchPromises = Object.entries(availableClients)
+            .filter(([_, client]) => client.enabled && client.configPath)
+            .map(async ([clientId, client]) => {
+                try {
+                    console.log(`Fetching config for client: ${client.name} (${clientId})`);
+                    const clientConfigUrl = `${API.CONFIG}?clientId=${clientId}`;
+                    const response = await fetch(clientConfigUrl);
+                    
+                    if (!response.ok) {
+                        console.warn(`Failed to fetch config for client ${client.name}: ${response.statusText}`);
+                        return null;
+                    }
+                    
+                    const clientConfig = await response.json();
+                    
+                    // If client has MCP servers configured, add them to the aggregated config
+                    if (clientConfig && clientConfig.mcpServers) {
+                        Object.entries(clientConfig.mcpServers).forEach(([serverKey, serverData]) => {
+                            // If server already exists in aggregatedConfig, merge but don't overwrite
+                            if (!aggregatedConfig.mcpServers[serverKey]) {
+                                aggregatedConfig.mcpServers[serverKey] = {
+                                    ...serverData,
+                                    enabled: true,
+                                    _sources: [clientId]
+                                };
+                            } else {
+                                // Track that multiple clients have this server
+                                if (!aggregatedConfig.mcpServers[serverKey]._sources) {
+                                    aggregatedConfig.mcpServers[serverKey]._sources = [clientId];
+                                } else if (!aggregatedConfig.mcpServers[serverKey]._sources.includes(clientId)) {
+                                    aggregatedConfig.mcpServers[serverKey]._sources.push(clientId);
+                                }
+                                
+                                // Mark conflicts if data differs
+                                if (!_.isEqual(_.omit(aggregatedConfig.mcpServers[serverKey], ['enabled', '_sources']), 
+                                              _.omit(serverData, ['enabled']))) {
+                                    aggregatedConfig.mcpServers[serverKey]._conflicts = true;
+                                }
+                            }
+                        });
+                    }
+                    return clientId;
+                } catch (error) {
+                    console.error(`Error fetching config for client ${client.name}:`, error);
+                    return null;
+                }
+            });
+        
+        // Wait for all client config fetches to complete
+        await Promise.all(clientFetchPromises);
+        
+        // If we found any configurations, save them to the server
+        if (Object.keys(aggregatedConfig.mcpServers).length > 0) {
+            console.log("Saving aggregated configuration:", aggregatedConfig);
+            
+            const saveResponse = await fetch(API.SAVE_CONFIGS, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    clients: [],  // Save to main config only
+                    config: aggregatedConfig
+                })
+            });
+            
+            if (!saveResponse.ok) {
+                throw new Error(`Failed to save aggregated config: ${saveResponse.statusText}`);
+            }
+            
+            console.log("Successfully saved aggregated configuration from clients");
+            return true;
+        } else {
+            console.log("No MCP server configurations found from any clients");
+            return false;
+        }
+    } catch (error) {
+        console.error("Error aggregating client configurations:", error);
+        showToast(`Failed to aggregate client configurations: ${error.message}`, "error");
+        return false;
     }
 }
 

@@ -672,19 +672,25 @@ router.get('/api/config/differs', (req, res) => {
 
 
 // Endpoint to get presets - updated to return full presets object
-router.get('/api/presets', (req, res) => {
+router.get('/api/presets', async (req, res) => {
     try {
         // Set proper content type header
         res.setHeader('Content-Type', 'application/json');
         
         const PRESETS_FILE = path.join(__dirname, 'presets.json');
         
-        if (!fs.existsSync(PRESETS_FILE)) {
-            console.log('Presets file not found, returning empty object');
-            return res.json({});
+        try {
+            // Use fs.access instead of fs.existsSync since we're using the promises API
+            await fs.access(PRESETS_FILE);
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                console.log('Presets file not found, returning empty object');
+                return res.json({});
+            }
+            throw error; // Rethrow other errors
         }
         
-        const presetsData = fs.readFileSync(PRESETS_FILE, 'utf8');
+        const presetsData = await fs.readFile(PRESETS_FILE, 'utf8');
         const presets = JSON.parse(presetsData);
         
         // Return the object of presets rather than just keys
