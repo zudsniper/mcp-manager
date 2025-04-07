@@ -38,11 +38,6 @@ const API = {
     CHECK_CONFIGS: '/api/check-configs', // Checks for diffs between *original* client files (only relevant in sync mode)
     RESET_CONFIG: '/api/reset-config', // Endpoint for resetting
     PRESETS: '/api/presets',
-    PRESET_GET: '/api/presets/',
-    PRESET_SAVE: '/api/presets/',
-    PRESET_DELETE: '/api/presets/',
-    SAVE_CLIENT: '/api/clients', // POST for add/update
-    DELETE_CLIENT: '/api/clients/', // DELETE /api/clients/:clientId
     SYNC_GROUP: '/api/sync-groups' // POST to create/update group
 };
 
@@ -822,7 +817,7 @@ async function loadPreset(presetName) {
     
     console.log(`Loading preset: ${presetName}`);
     try {
-        const response = await fetchWithTimeout(`${API.PRESET_GET}${encodeURIComponent(presetName)}`);
+        const response = await fetchWithTimeout(`${API.PRESETS}/${encodeURIComponent(presetName)}`);
         console.log('Loaded preset:', response);
         
         if (!response.mcpServers) {
@@ -865,10 +860,13 @@ async function saveCurrentAsPreset() {
     
     console.log(`Saving new preset: ${newPresetName}`);
     try {
-        const response = await fetchWithTimeout(`${API.PRESET_SAVE}${encodeURIComponent(newPresetName)}`, {
+        const response = await fetchWithTimeout(API.PRESETS, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mcpServers })
+            body: JSON.stringify({ 
+                name: newPresetName,
+                mcpServers 
+            })
         });
         
         console.log('Save preset response:', response);
@@ -904,7 +902,7 @@ async function saveToCurrentPreset() {
     
     console.log(`Saving changes to preset: ${currentPreset}`);
     try {
-        const response = await fetchWithTimeout(`${API.PRESET_SAVE}${encodeURIComponent(currentPreset)}`, {
+        const response = await fetchWithTimeout(`${API.PRESETS}/${encodeURIComponent(currentPreset)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ mcpServers })
@@ -958,7 +956,7 @@ async function deleteCurrentPreset() {
     
     console.log(`Deleting preset: ${currentPreset}`);
     try {
-        const response = await fetchWithTimeout(`${API.PRESET_DELETE}${encodeURIComponent(currentPreset)}`, {
+        const response = await fetchWithTimeout(`${API.PRESETS}/${encodeURIComponent(currentPreset)}`, {
             method: 'DELETE'
         });
         

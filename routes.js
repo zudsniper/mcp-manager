@@ -677,23 +677,7 @@ router.get('/api/presets', async (req, res) => {
         // Set proper content type header
         res.setHeader('Content-Type', 'application/json');
         
-        const PRESETS_FILE = path.join(__dirname, 'presets.json');
-        
-        try {
-            // Use fs.access instead of fs.existsSync since we're using the promises API
-            await fs.access(PRESETS_FILE);
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                console.log('Presets file not found, returning empty object');
-                return res.json({});
-            }
-            throw error; // Rethrow other errors
-        }
-        
-        const presetsData = await fs.readFile(PRESETS_FILE, 'utf8');
-        const presets = JSON.parse(presetsData);
-        
-        // Return the object of presets rather than just keys
+        const presets = await readPresetsFile();
         return res.json(presets);
     } catch (error) {
         console.error('Error getting presets:', error);
@@ -702,40 +686,102 @@ router.get('/api/presets', async (req, res) => {
     }
 });
 
-// Helper function to read presets
-async function readPresetsFile() {
+// Endpoint to get a specific preset by name
+router.get('/api/presets/:name', async (req, res) => {
+    const presetName = req.params.name;
     try {
-        const data = await fs.readFile(PRESETS_PATH, 'utf8');
-        return JSON.parse(data);
-    } catch (error) {
-        if (error.code === 'ENOENT') {
-            console.log('Presets file not found, creating default.');
-            const defaultPresets = { "Default": {} };
-            await fs.writeFile(PRESETS_PATH, JSON.stringify(defaultPresets, null, 2));
-            return defaultPresets;
+        const presets = await readPresetsFile();
+        
+        if (!presets[presetName]) {
+            return res.status(404).json({ error: `Preset '${presetName}' not found` });
         }
-        console.error('Error reading presets file:', error);
-        throw error;
-    }
-}
-
-// Endpoint to save presets
-router.post('/presets', async (req, res) => {
-    const { presets } = req.body;
-    console.log('POST /api/presets');
-    if (!presets || typeof presets !== 'object') {
-        return res.status(400).json({ error: 'Invalid presets data format.' });
-    }
-    try {
-        await fs.writeFile(PRESETS_PATH, JSON.stringify(presets, null, 2));
-        console.log(`Presets saved successfully to ${PRESETS_PATH}`);
-        res.json({ success: true, message: 'Presets saved successfully.' });
+        
+        return res.json({ mcpServers: presets[presetName] });
     } catch (error) {
-        console.error('Error saving presets:', error);
-        res.status(500).json({ error: 'Failed to save presets.' });
+        console.error(`Error getting preset '${presetName}':`, error);
+        return res.status(500).json({ error: `Failed to get preset '${presetName}'` });
     }
 });
 
+// Endpoint to create a new preset
+router.post('/api/presets', async (req, res) => {
+    try {
+        const { name, mcpServers } = req.body;
+        
+        if (!name) {
+            return res.status(400).json({ error: 'Preset name is required' });
+        }
+        
+        if (!mcpServers || typeof mcpServers !== 'object') {
+            return res.status(400).json({ error: 'Invalid mcpServers data format' });
+        }
+        
+        const presets = await readPresetsFile();
+        
+        // Add the new preset
+        presets[name] = mcpServers;
+        
+        await fs.writeFile(PRESETS_PATH, JSON.stringify(presets, null, 2));
+        console.log(`Preset '${name}' created successfully`);
+        
+        return res.json({ success: true, message: `Preset '${name}' created successfully` });
+    } catch (error) {
+        console.error('Error creating preset:', error);
+        return res.status(500).json({ error: 'Failed to create preset' });
+    }
+});
+
+// Endpoint to update an existing preset
+router.post('/api/presets/:name', async (req, res) => {
+    const presetName = req.params.name;
+    try {
+        const { mcpServers } = req.body;
+        
+        if (!mcpServers || typeof mcpServers !== 'object') {
+            return res.status(400).json({ error: 'Invalid mcpServers data format' });
+        }
+        
+        const presets = await readPresetsFile();
+        
+        if (!presets[presetName]) {
+            return res.status(404).json({ error: `Preset '${presetName}' not found` });
+        }
+        
+        // Update the preset
+        presets[presetName] = mcpServers;
+        
+        await fs.writeFile(PRESETS_PATH, JSON.stringify(presets, null, 2));
+        console.log(`Preset '${presetName}' updated successfully`);
+        
+        return res.json({ success: true, message: `Preset '${presetName}' updated successfully` });
+    } catch (error) {
+        console.error(`Error updating preset '${presetName}':`, error);
+        return res.status(500).json({ error: `Failed to update preset '${presetName}'` });
+    }
+});
+
+// Endpoint to delete a preset
+router.delete('/api/presets/:name', async (req, res) => {
+    const presetName = req.params.name;
+    try {
+        const presets = await readPresetsFile();
+        
+        if (!presets[presetName]) {
+            return res.status(404).json({ error: `Preset '${presetName}' not found` });
+        }
+        
+        // Delete the preset
+        delete presets[presetName];
+        
+        await fs.writeFile(PRESETS_PATH, JSON.stringify(presets, null, 2));
+        console.log(`Preset '${presetName}' deleted successfully`);
+        
+        return res.json({ success: true, message: `Preset '${presetName}' deleted successfully` });
+    } catch (error) {
+        console.error(`Error deleting preset '${presetName}':`, error);
+        return res.status(500).json({ error: `Failed to delete preset '${presetName}'` });
+    }
+});
 
 // Endpoint to check for configuration differences (relevant primarily for sync mode)
 router.get('/check-configs', async (req, res) => {
@@ -1229,3 +1275,20 @@ router.post('/api/sync-groups', async (req, res) => {
         res.status(500).json({ error: 'Failed to save settings after creating sync group' });
     }
 });
+
+// Helper function to read presets
+async function readPresetsFile() {
+    try {
+        const data = await fs.readFile(PRESETS_PATH, 'utf8');
+        return JSON.parse(data);
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            console.log('Presets file not found, creating default.');
+            const defaultPresets = { "Default": {} };
+            await fs.writeFile(PRESETS_PATH, JSON.stringify(defaultPresets, null, 2));
+            return defaultPresets;
+        }
+        console.error('Error reading presets file:', error);
+        throw error;
+    }
+}
